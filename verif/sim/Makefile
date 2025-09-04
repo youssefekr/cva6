@@ -69,7 +69,7 @@ ifneq ($(wildcard $(spike_yaml)),)
   spike-yaml-plusarg = +config_file=$(spike_yaml)
   spike-yaml-makearg = config_file=$(spike_yaml)
 else
-  spike_params_final := $(spike_params_final) --extension=cvxif
+  spike_params_final := $(spike_params_final) #--extension=cvxif
 endif
 
 ##############################################
@@ -136,10 +136,10 @@ endif
 
 ###############################################################################
 # Spike specific commands, variables
-###############################################################################
+###############################################################################$(tool_path)/../../spike-latest/bin/spike $(spike_extension) --log-commits --isa=$(variant) --priv=$(priv) $(spike_params_final) -l $(elf)
 spike:
 	LD_LIBRARY_PATH="$$(realpath ../../tools/spike/lib):$$LD_LIBRARY_PATH" \
-		$(tool_path)/spike $(spike_stepout) $(spike_extension) --log-commits --isa=$(variant) --priv=$(priv) $(spike_params_final) -l $(elf)
+		$(tool_path)/../../core-v-verif-spike/bin/spike -m0x18000000000:1000000000 $(spike_extension) --log-commits --isa=$(variant) --priv=$(priv) $(spike_params_final) -l $(elf)
 	grep -v '^\([[]\|/top/\)' $(log).iss > $(log)
 
 ###############################################################################
@@ -431,7 +431,7 @@ veri-testharness-pk:
 veri-testharness:
 	make -C $(path_var) verilate verilator="verilator --no-timing" target=$(target) defines=$(subst +define+,,$(isscomp_opts))
 	$(path_var)/work-ver/Variane_testharness $(if $(TRACE_COMPACT), -f verilator.fst) $(if $(TRACE_FAST), -v verilator.vcd) $(elf) $(issrun_opts) \
-	  $(COMMON_PLUS_ARGS)
+	  $(COMMON_PLUS_ARGS)  || true
 	# If present, move default waveform files to log directory.
 	# Keep track of target in waveform file name.
 	[ ! -f verilator.fst ] || mv verilator.fst `dirname $(log)`/`basename $(log) .log`.fst

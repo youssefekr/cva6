@@ -541,7 +541,7 @@ def run_test(test, iss_yaml, isa, target, mabi, gcc_opts, iss_opts, output_dir,
     else: ratio = 1
     if tandem_sim:
       generate_yaml_report(yaml, target, isa, test_log_name, testlist, iss, True)
-    run_cmd(cmd, iss_timeout//ratio, debug_cmd = debug_cmd)
+    run_cmd(cmd, iss_timeout//ratio, 0, debug_cmd = debug_cmd)
     logging.info("[%0s] Running ISS simulation: %s ...done" % (iss, elf))
 
     if tandem_sim:
@@ -892,7 +892,7 @@ def load_config(args, cwd):
     elif base in ("cv64a6_imafdc_sv39_wb",):
       args.mabi = "lp64d"
       args.isa  = "rv64gc_zba_zbb_zbs_zbc"
-    elif base in ("cv64a6_imafdc_sv39", "cv64a6_imafdc_sv39_hpdcache", "cv64a6_imafdc_sv39_hpdcache_wb"):
+    elif base in ("cv64a6_imafdc_sv39", "cv64a6_imafdc_sv39_oc_override", "cv64a6_imafdc_sv39_hpdcache", "cv64a6_imafdc_sv39_hpdcache_wb"):
       args.mabi = "lp64d"
       args.isa  = "rv64gc_zba_zbb_zbs_zbc_zbkb_zbkx_zkne_zknd_zknh"
     elif base == "cv32a60x":

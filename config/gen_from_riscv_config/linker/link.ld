@@ -18,7 +18,7 @@ ENTRY(_start)
 
 SECTIONS
 {
-  . = 0x80000000;
+  . = 0x18000000000; #. = 0x80000000;
   _start_text = .;
   .text.init : { *(.text.init) }
   . = ALIGN(0x1000);

@@ -121,8 +121,8 @@ def read_spike_trace(path, full_trace):
     # true. Otherwise, we are in state EFFECT if instr is not None, otherwise we
     # are in state INSTR.
 
-    start_trampoline_re = re.compile(r'core.*: 0x0*10000 ')
-    end_trampoline_re = re.compile(r'core.*: 0x0*10010 ')
+    start_trampoline_re = re.compile(r'core.*: 0x0*1000 ')
+    end_trampoline_re = re.compile(r'core.*: 0x0*1010 ')
 
     in_trampoline = False
     instr = None

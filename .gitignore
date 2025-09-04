@@ -46,7 +46,9 @@ xrun_results/
 __pycache__
 .bender/
 Bender.lock
-/tools/
+/tools/spike/
+/tools/core-v-verif-spike/
+/tools/spike-latest/
 /util/toolchain-builder/src/
 /util/toolchain-builder/build/
 # Both following lines are needed to list contents of ISA manual build dir.

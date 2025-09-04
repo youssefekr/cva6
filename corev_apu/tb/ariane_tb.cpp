@@ -345,9 +345,9 @@ done_processing:
   size_t mem_size = 0xFFFFFF;
   while(get_section(&addr, &len))
   {
-    if (addr == 0x80000000)
+    if (addr == 0x18000000000)
         read_section_void(addr, (void *) MEM , mem_size);
-    if (addr == 0x84000000)
+    if (addr == (0x18000000000 + 0x01FFBFFFFF)) // is this correct? in original version seems Base + Length, but it's actually not
         try {
           read_section_void(addr, (void *) MEM_USER , mem_size);
         } catch (...){

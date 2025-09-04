@@ -5,8 +5,8 @@ _start:
 # li s0, DRAM_BASE creates instructions not compatible with both
 # versions. That's why we have replaced it by li and slli instructions
 # to generates code compatible with both versions.
-  li s0, 1
-  slli s0, s0, 31
+  li s0, 3 #li s0, 1 #
+  slli s0, s0, 39 #slli s0, s0, 31 #
   csrr a0, mhartid
   la a1, _dtb
   jr s0

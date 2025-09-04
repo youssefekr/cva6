@@ -35,9 +35,6 @@ waves.shm/
 *.log
 stdout.txt
 .vscode
-tests/riscv-compliance/
-tests/riscv-arch-test/
-tests/riscv-tests/
 tests/riscv-isa-sim/
 sim/vcs_results
 sim/verilator_work
