@@ -129,7 +129,13 @@ module cva6_icache_axi_wrapper
       .mem_rtrn_i    (icache_mem_rtrn),
       .mem_data_req_o(icache_mem_data_req),
       .mem_data_ack_i(icache_mem_data_ack),
-      .mem_data_o    (icache_mem_data)
+      .mem_data_o    (icache_mem_data),
+      .s1_busy_o     (),
+      .s1_addr_o     (),
+      .s1_hartid_o   (),
+      .s2_busy_o     (),
+      .s2_addr_o     (),
+      .s2_hartid_o   ()
   );
 
   // --------

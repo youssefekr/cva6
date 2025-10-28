@@ -34,7 +34,7 @@ module issue_read_operands
     // Asynchronous reset active low - SUBSYSTEM
     input logic rst_ni,
     // Prevent from issuing - CONTROLLER
-    input logic flush_i,
+    input logic [CVA6Cfg.NrHarts-1:0] flush_i,
     // Stall inserted by Acc dispatcher - ACC_DISPATCHER
     input logic stall_i,
     // Entry about the instruction to issue - SCOREBOARD
@@ -122,9 +122,9 @@ module issue_read_operands
     // Value to write to register file - COMMIT_STAGE
     input logic [CVA6Cfg.NrCommitPorts-1:0][CVA6Cfg.XLEN-1:0] wdata_i,
     // GPR write enable - COMMIT_STAGE
-    input logic [CVA6Cfg.NrCommitPorts-1:0] we_gpr_i,
+    input logic [CVA6Cfg.NrHarts-1:0][CVA6Cfg.NrCommitPorts-1:0] we_gpr_i,
     // FPR write enable - COMMIT_STAGE
-    input logic [CVA6Cfg.NrCommitPorts-1:0] we_fpr_i,
+    input logic [CVA6Cfg.NrHarts-1:0][CVA6Cfg.NrCommitPorts-1:0] we_fpr_i,
     // Issue stall - PERF_COUNTERS
     output logic stall_issue_o,
     // Information dedicated to RVFI - RVFI
@@ -190,6 +190,7 @@ module issue_read_operands
 
 
   logic [CVA6Cfg.NR_SB_ENTRIES-1:0][ariane_pkg::REG_ADDR_SIZE-1:0] rd_list;
+  logic [CVA6Cfg.NR_SB_ENTRIES-1:0]                                same_hart;
   logic [CVA6Cfg.NR_SB_ENTRIES-1:0]                                rd_fpr;
 
   //fwd logic
@@ -467,6 +468,7 @@ module issue_read_operands
   for (genvar i = 0; i < CVA6Cfg.NR_SB_ENTRIES; i++) begin
     assign rd_list[i] = fwd_i.sbe[i].rd;
     assign rd_fpr[i]  = CVA6Cfg.FpPresent && ariane_pkg::is_rd_fpr(fwd_i.sbe[i].op);
+    assign same_hart[i] = (fwd_i.sbe[i].hartid == issue_instr_i[0].hartid);
   end
 
   for (genvar i = 0; i < CVA6Cfg.NrIssuePorts; i++) begin : gen_raw_checks
@@ -479,7 +481,7 @@ module issue_read_operands
         .rs_fpr_i(rs1_fpr[i]),
         .rd_i(rd_list),
         .rd_fpr_i(rd_fpr),
-        .still_issued_i(fwd_i.still_issued),
+        .still_issued_i(fwd_i.still_issued & same_hart),
         .issue_pointer_i(fwd_i.issue_pointer),
         .idx_o(idx_hzd_rs1[i]),
         .valid_o(rs1_raw_check[i])
@@ -495,7 +497,7 @@ module issue_read_operands
         .rs_fpr_i(rs2_fpr[i]),
         .rd_i(rd_list),
         .rd_fpr_i(rd_fpr),
-        .still_issued_i(fwd_i.still_issued),
+        .still_issued_i(fwd_i.still_issued & same_hart),
         .issue_pointer_i(fwd_i.issue_pointer),
         .idx_o(idx_hzd_rs2[i]),
         .valid_o(rs2_raw_check[i])
@@ -511,7 +513,7 @@ module issue_read_operands
         .rs_fpr_i(rs3_fpr[i]),
         .rd_i(rd_list),
         .rd_fpr_i(rd_fpr),
-        .still_issued_i(fwd_i.still_issued),
+        .still_issued_i(fwd_i.still_issued & same_hart),
         .issue_pointer_i(fwd_i.issue_pointer),
         .idx_o(idx_hzd_rs3[i]),
         .valid_o(rs3_raw_check[i])
@@ -773,7 +775,7 @@ module issue_read_operands
     end
     // if we got a flush request, de-assert the valid flag, otherwise we will start this
     // functional unit with the wrong inputs
-    if (flush_i) begin
+    if (flush_i[issue_instr_i[0].hartid]) begin
       alu_valid_n    = '0;
       aes_valid_n    = '0;
       lsu_valid_n    = '0;
@@ -877,13 +879,13 @@ module issue_read_operands
   // ----------------------
   // Integer Register File
   // ----------------------
-  logic [  CVA6Cfg.NrRgprPorts-1:0][CVA6Cfg.XLEN-1:0] rdata;
+  logic [CVA6Cfg.NrHarts-1:0][  CVA6Cfg.NrRgprPorts-1:0][CVA6Cfg.XLEN-1:0] rdata;
   logic [  CVA6Cfg.NrRgprPorts-1:0][             4:0] raddr_pack;
 
   // pack signals
   logic [CVA6Cfg.NrCommitPorts-1:0][             4:0] waddr_pack;
   logic [CVA6Cfg.NrCommitPorts-1:0][CVA6Cfg.XLEN-1:0] wdata_pack;
-  logic [CVA6Cfg.NrCommitPorts-1:0]                   we_pack;
+  logic [CVA6Cfg.NrHarts-1:0][CVA6Cfg.NrCommitPorts-1:0]                   we_pack;
 
   //adjust address to read from register file (when synchronous RAM is used reads take one cycle, so we advance the address)
   for (genvar i = 0; i <= CVA6Cfg.NrIssuePorts - 1; i++) begin
@@ -899,44 +901,46 @@ module issue_read_operands
     assign wdata_pack[i] = wdata_i[i];
     assign we_pack[i]    = we_gpr_i[i];
   end
-  if (CVA6Cfg.FpgaEn) begin : gen_fpga_regfile
-    ariane_regfile_fpga #(
-        .CVA6Cfg      (CVA6Cfg),
-        .DATA_WIDTH   (CVA6Cfg.XLEN),
-        .NR_READ_PORTS(CVA6Cfg.NrRgprPorts),
-        .ZERO_REG_ZERO(1)
-    ) i_ariane_regfile_fpga (
-        .clk_i,
-        .rst_ni,
-        .test_en_i(1'b0),
-        .raddr_i  (raddr_pack),
-        .rdata_o  (rdata),
-        .waddr_i  (waddr_pack),
-        .wdata_i  (wdata_pack),
-        .we_i     (we_pack)
-    );
-  end else begin : gen_asic_regfile
-    ariane_regfile #(
-        .CVA6Cfg      (CVA6Cfg),
-        .DATA_WIDTH   (CVA6Cfg.XLEN),
-        .NR_READ_PORTS(CVA6Cfg.NrRgprPorts),
-        .ZERO_REG_ZERO(1)
-    ) i_ariane_regfile (
-        .clk_i,
-        .rst_ni,
-        .test_en_i(1'b0),
-        .raddr_i  (raddr_pack),
-        .rdata_o  (rdata),
-        .waddr_i  (waddr_pack),
-        .wdata_i  (wdata_pack),
-        .we_i     (we_pack)
-    );
+  for (genvar i = 0; i < CVA6Cfg.NrHarts; i++) begin : gen_regfile
+    if (CVA6Cfg.FpgaEn) begin : gen_fpga_regfile
+      ariane_regfile_fpga #(
+          .CVA6Cfg      (CVA6Cfg),
+          .DATA_WIDTH   (CVA6Cfg.XLEN),
+          .NR_READ_PORTS(CVA6Cfg.NrRgprPorts),
+          .ZERO_REG_ZERO(1)
+      ) i_ariane_regfile_fpga (
+          .clk_i,
+          .rst_ni,
+          .test_en_i(1'b0),
+          .raddr_i  (raddr_pack),
+          .rdata_o  (rdata[i]),
+          .waddr_i  (waddr_pack),
+          .wdata_i  (wdata_pack),
+          .we_i     (we_pack[i])
+      );
+    end else begin : gen_asic_regfile
+      ariane_regfile #(
+          .CVA6Cfg      (CVA6Cfg),
+          .DATA_WIDTH   (CVA6Cfg.XLEN),
+          .NR_READ_PORTS(CVA6Cfg.NrRgprPorts),
+          .ZERO_REG_ZERO(1)
+      ) i_ariane_regfile (
+          .clk_i,
+          .rst_ni,
+          .test_en_i(1'b0),
+          .raddr_i  (raddr_pack),
+          .rdata_o  (rdata[i]),
+          .waddr_i  (waddr_pack),
+          .wdata_i  (wdata_pack),
+          .we_i     (we_pack[i])
+      );
+    end
   end
 
   // -----------------------------
   // Floating-Point Register File
   // -----------------------------
-  logic [2:0][CVA6Cfg.FLen-1:0] fprdata;
+  logic [CVA6Cfg.NrHarts-1:0][2:0][CVA6Cfg.FLen-1:0] fprdata;
 
   // pack signals
   logic [2:0][4:0] fp_raddr_pack;
@@ -961,38 +965,40 @@ module issue_read_operands
       for (genvar i = 0; i < CVA6Cfg.NrCommitPorts; i++) begin : gen_fp_wdata_pack
         assign fp_wdata_pack[i] = {wdata_i[i][CVA6Cfg.FLen-1:0]};
       end
-      if (CVA6Cfg.FpgaEn) begin : gen_fpga_fp_regfile
-        ariane_regfile_fpga #(
-            .CVA6Cfg      (CVA6Cfg),
-            .DATA_WIDTH   (CVA6Cfg.FLen),
-            .NR_READ_PORTS(3),
-            .ZERO_REG_ZERO(0)
-        ) i_ariane_fp_regfile_fpga (
-            .clk_i,
-            .rst_ni,
-            .test_en_i(1'b0),
-            .raddr_i  (fp_raddr_pack),
-            .rdata_o  (fprdata),
-            .waddr_i  (waddr_pack),
-            .wdata_i  (fp_wdata_pack),
-            .we_i     (we_fpr_i)
-        );
-      end else begin : gen_asic_fp_regfile
-        ariane_regfile #(
-            .CVA6Cfg      (CVA6Cfg),
-            .DATA_WIDTH   (CVA6Cfg.FLen),
-            .NR_READ_PORTS(3),
-            .ZERO_REG_ZERO(0)
-        ) i_ariane_fp_regfile (
-            .clk_i,
-            .rst_ni,
-            .test_en_i(1'b0),
-            .raddr_i  (fp_raddr_pack),
-            .rdata_o  (fprdata),
-            .waddr_i  (waddr_pack),
-            .wdata_i  (fp_wdata_pack),
-            .we_i     (we_fpr_i)
-        );
+      for (genvar j = 0; j < CVA6Cfg.NrHarts; j++) begin : gen_fp_regfile
+        if (CVA6Cfg.FpgaEn) begin : gen_fpga_fp_regfile
+          ariane_regfile_fpga #(
+              .CVA6Cfg      (CVA6Cfg),
+              .DATA_WIDTH   (CVA6Cfg.FLen),
+              .NR_READ_PORTS(3),
+              .ZERO_REG_ZERO(0)
+          ) i_ariane_fp_regfile_fpga (
+              .clk_i,
+              .rst_ni,
+              .test_en_i(1'b0),
+              .raddr_i  (fp_raddr_pack),
+              .rdata_o  (fprdata[j]),
+              .waddr_i  (waddr_pack),
+              .wdata_i  (fp_wdata_pack),
+              .we_i     (we_fpr_i[j])
+          );
+        end else begin : gen_asic_fp_regfile
+          ariane_regfile #(
+              .CVA6Cfg      (CVA6Cfg),
+              .DATA_WIDTH   (CVA6Cfg.FLen),
+              .NR_READ_PORTS(3),
+              .ZERO_REG_ZERO(0)
+          ) i_ariane_fp_regfile (
+              .clk_i,
+              .rst_ni,
+              .test_en_i(1'b0),
+              .raddr_i  (fp_raddr_pack),
+              .rdata_o  (fprdata[j]),
+              .waddr_i  (waddr_pack),
+              .wdata_i  (fp_wdata_pack),
+              .we_i     (we_fpr_i[j])
+          );
+        end
       end
     end else begin : no_fpr_gen
       assign fprdata = '{default: '0};
@@ -1012,10 +1018,10 @@ module issue_read_operands
 
     assign operand_a_regfile[i] = (CVA6Cfg.FpPresent && is_rs1_fpr(
         issue_instr_i[i].op
-    )) ? {{CVA6Cfg.XLEN - CVA6Cfg.FLen{1'b0}}, fprdata[0]} : rdata[i*OPERANDS_PER_INSTR+0];
+    )) ? {{CVA6Cfg.XLEN - CVA6Cfg.FLen{1'b0}}, fprdata[issue_instr_i[i].hartid][0]} : rdata[issue_instr_i[i].hartid][i*OPERANDS_PER_INSTR+0];
     assign operand_b_regfile[i] = (CVA6Cfg.FpPresent && is_rs2_fpr(
         issue_instr_i[i].op
-    )) ? {{CVA6Cfg.XLEN - CVA6Cfg.FLen{1'b0}}, fprdata[1]} : rdata[i*OPERANDS_PER_INSTR+1];
+    )) ? {{CVA6Cfg.XLEN - CVA6Cfg.FLen{1'b0}}, fprdata[issue_instr_i[i].hartid][1]} : rdata[issue_instr_i[i].hartid][i*OPERANDS_PER_INSTR+1];
     assign operand_c_regfile[i] = (OPERANDS_PER_INSTR == 3) ? ((CVA6Cfg.FpPresent && is_imm_fpr(
         issue_instr_i[i].op
     )) ? operand_c_fpr : operand_c_gpr[i]) : operand_c_fpr;

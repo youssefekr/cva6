@@ -59,7 +59,14 @@ module cva6_icache
     input  icache_rtrn_t mem_rtrn_i,
     output logic         mem_data_req_o,
     input  logic         mem_data_ack_i,
-    output icache_req_t  mem_data_o
+    output icache_req_t  mem_data_o,
+    // stage signals for replay
+    output logic         s1_busy_o,
+    output logic [CVA6Cfg.VLEN-1:0] s1_addr_o,
+    output logic [CVA6Cfg.LOG2_HARTS-1:0] s1_hartid_o,
+    output logic         s2_busy_o,
+    output logic [CVA6Cfg.VLEN-1:0] s2_addr_o,
+    output logic [CVA6Cfg.LOG2_HARTS-1:0] s2_hartid_o
 );
 
   localparam ICACHE_OFFSET_WIDTH = $clog2(CVA6Cfg.ICACHE_LINE_WIDTH / 8);
@@ -78,6 +85,7 @@ module cva6_icache
   // signals
   logic cache_en_d, cache_en_q;  // cache is enabled
   logic [CVA6Cfg.VLEN-1:0] vaddr_d, vaddr_q;
+  logic [CVA6Cfg.LOG2_HARTS-1:0] hartid_d, hartid_q;
   logic paddr_is_nc;  // asserted if physical address is non-cacheable
   logic [CVA6Cfg.ICACHE_SET_ASSOC-1:0] cl_hit;  // hit from tag compare
   logic cache_rden;  // triggers cache lookup
@@ -147,6 +155,7 @@ module cva6_icache
   // latch this in case we have to stall later on
   // make sure this is 32bit aligned
   assign vaddr_d = (dreq_o.ready & dreq_i.req) ? dreq_i.vaddr : vaddr_q;
+  assign hartid_d = (dreq_o.ready & dreq_i.req) ? dreq_i.hartid : hartid_q;
   assign areq_o.fetch_vaddr = (vaddr_q >> CVA6Cfg.FETCH_ALIGN_BITS) << CVA6Cfg.FETCH_ALIGN_BITS;
 
   // split virtual address into index and offset to address cache arrays
@@ -208,6 +217,14 @@ module cva6_icache
     // performance counter
     miss_o = 1'b0;
 
+    // stage addressess and hartids
+    s1_busy_o = 1'b0;
+    s1_addr_o = '0;
+    s1_hartid_o = '0;
+    s2_busy_o = 1'b0;
+    s2_addr_o = '0;
+    s2_hartid_o = '0;
+
     // handle invalidations unconditionally
     // note: invals are mutually exclusive with
     // ifills, since both arrive over the same IF
@@ -246,6 +263,9 @@ module cva6_icache
             // we have a new request
             if (dreq_i.req) begin
               cache_rden = 1'b1;
+              s1_addr_o = dreq_i.vaddr;
+              s1_hartid_o = dreq_i.hartid;
+              s1_busy_o = 1'b1;
               state_d    = READ;
             end
           end
@@ -262,6 +282,9 @@ module cva6_icache
       // the request
       READ: begin
         areq_o.fetch_req = '1;
+        s2_addr_o  = vaddr_q;
+        s2_hartid_o = hartid_q;
+        s2_busy_o    = 1'b1;
         // only enable tag comparison if cache is enabled
         cmp_en_d    = cache_en_q;
         // readout speculatively
@@ -282,6 +305,9 @@ module cva6_icache
             if (!mem_rtrn_vld_i) begin
               dreq_o.ready = 1'b1;
               if (dreq_i.req) begin
+                s1_addr_o = dreq_i.vaddr;
+                s1_hartid_o = dreq_i.hartid;
+                s1_busy_o = 1'b1;
                 state_d = READ;
               end
             end
@@ -314,6 +340,9 @@ module cva6_icache
       // returns. do not write to memory
       // if the nc bit is set.
       MISS: begin
+        s2_addr_o  = vaddr_q;
+        s2_hartid_o = hartid_q;
+        s2_busy_o    = 1'b1;
         // note: this is mutually exclusive with ICACHE_INV_REQ,
         // so we do not have to check for invals here
         if (mem_rtrn_vld_i && mem_rtrn_i.rtype == ICACHE_IFILL_ACK) begin
@@ -520,6 +549,7 @@ module cva6_icache
       cl_tag_q      <= cl_tag_d;
       flush_cnt_q   <= flush_cnt_d;
       vaddr_q       <= vaddr_d;
+      hartid_q      <= hartid_d;
       cmp_en_q      <= cmp_en_d;
       cache_en_q    <= cache_en_d;
       flush_q       <= flush_d;

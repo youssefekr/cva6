@@ -45,6 +45,9 @@ package build_config_pkg;
     cfg.FpgaAlteraEn = CVA6Cfg.FpgaAlteraEn;
     cfg.TechnoCut = CVA6Cfg.TechnoCut;
 
+    cfg.MultihartEn = CVA6Cfg.MultihartEn;
+    cfg.NrHarts = unsigned'(CVA6Cfg.MultihartEn ? unsigned'(4) : unsigned'(1));
+    cfg.LOG2_HARTS= cfg.NrHarts > 1 ? $clog2(cfg.NrHarts) : 1;
     cfg.SuperscalarEn = CVA6Cfg.SuperscalarEn;
     cfg.NrCommitPorts = CVA6Cfg.SuperscalarEn ? unsigned'(2) : CVA6Cfg.NrCommitPorts;
     cfg.NrIssuePorts = unsigned'(CVA6Cfg.SuperscalarEn ? 2 : 1);

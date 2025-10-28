@@ -31,6 +31,9 @@ module cva6
       rvfi_probes_instr_t instr;
     },
 
+    // Hart ID
+    parameter type hart_id_t = logic [CVA6Cfg.LOG2_HARTS-1:0],
+
     // branchpredict scoreboard entry
     // this is the struct which we will inject into the pipeline to guide the various
     // units towards the correct branch decision and resolve
@@ -68,6 +71,7 @@ module cva6
       logic                    kill_s2;  // kill the last request
       logic                    spec;     // request is speculative
       logic [CVA6Cfg.VLEN-1:0] vaddr;    // 1st cycle: 12 bit index is taken for lookup
+      hart_id_t                hartid;   // hart ID
     },
     localparam type icache_drsp_t = struct packed {
       logic                                ready;  // icache is ready
@@ -76,6 +80,7 @@ module cva6
       logic [CVA6Cfg.FETCH_USER_WIDTH-1:0] user;   // User bits
       logic [CVA6Cfg.VLEN-1:0]             vaddr;  // virtual address out
       exception_t                          ex;     // we've encountered an exception
+      hart_id_t                           hartid; // hart ID
     },
 
     // IF/ID Stage
@@ -83,6 +88,7 @@ module cva6
     localparam type fetch_entry_t = struct packed {
       logic [CVA6Cfg.VLEN-1:0] address;  // the address of the instructions from below
       logic [31:0] instruction;  // instruction word
+      hart_id_t hartid; // hart ID
       branchpredict_sbe_t     branch_predict; // this field contains branch prediction information regarding the forward branch path
       exception_t             ex;             // this field contains exceptions which might have happened earlier, e.g.: fetch exceptions
     },
@@ -119,6 +125,7 @@ module cva6
       logic is_double_rd_macro_instr;  // is double move decoded 32bit instruction of macro definition
       logic vfp;  // is this a vector floating-point instruction?
       logic is_zcmt;  //is a zcmt instruction
+      hart_id_t hartid;  // hart ID
     },
     localparam type writeback_t = struct packed {
       logic valid;  // wb data is valid
@@ -138,6 +145,7 @@ module cva6
       logic                    is_mispredict;   // set if this was a mis-predict
       logic                    is_taken;        // branch is taken
       cf_t                     cf_type;         // Type of control flow change
+      hart_id_t                hartid;         // hart ID
     },
 
     // All information needed to determine whether we need to associate an interrupt
@@ -608,15 +616,15 @@ module cva6
   // CTRL <-> *
   // --------------
   logic set_pc_ctrl_pcgen;
-  logic flush_csr_ctrl;
-  logic flush_unissued_instr_ctrl_id;
-  logic flush_ctrl_if;
-  logic flush_ctrl_id;
-  logic flush_ctrl_ex;
-  logic flush_ctrl_bp;
-  logic flush_tlb_ctrl_ex;
-  logic flush_tlb_vvma_ctrl_ex;
-  logic flush_tlb_gvma_ctrl_ex;
+  logic [CVA6Cfg.NrHarts-1:0] flush_csr_ctrl;
+  logic [CVA6Cfg.NrHarts-1:0] flush_unissued_instr_ctrl_id;
+  logic [CVA6Cfg.NrHarts-1:0] flush_ctrl_if;
+  logic [CVA6Cfg.NrHarts-1:0] flush_ctrl_id;
+  logic [CVA6Cfg.NrHarts-1:0] flush_ctrl_ex;
+  logic [CVA6Cfg.NrHarts-1:0] flush_ctrl_bp;
+  logic [CVA6Cfg.NrHarts-1:0] flush_tlb_ctrl_ex;
+  logic [CVA6Cfg.NrHarts-1:0] flush_tlb_vvma_ctrl_ex;
+  logic [CVA6Cfg.NrHarts-1:0] flush_tlb_gvma_ctrl_ex;
   logic fence_i_commit_controller;
   logic fence_commit_controller;
   logic sfence_vma_commit_controller;
@@ -635,6 +643,9 @@ module cva6
   icache_arsp_t icache_areq_cache_ex;
   icache_dreq_t icache_dreq_if_cache;
   icache_drsp_t icache_dreq_cache_if;
+  logic icache_s1_busy_cache_if, icache_s2_busy_cache_if;
+  logic [CVA6Cfg.VLEN-1:0] icache_s1_addr_cache_if, icache_s2_addr_cache_if;
+  logic [CVA6Cfg.LOG2_HARTS-1:0] icache_s1_hartid_cache_if, icache_s2_hartid_cache_if;
 
   amo_req_t amo_req;
   amo_resp_t amo_resp;
@@ -691,6 +702,12 @@ module cva6
       .debug_mode_i       (debug_mode),
       .icache_dreq_o      (icache_dreq_if_cache),
       .icache_dreq_i      (icache_dreq_cache_if),
+      .icache_s1_busy_i   (icache_s1_busy_cache_if),
+      .icache_s1_addr_i   (icache_s1_addr_cache_if),
+      .icache_s1_hartid_i (icache_s1_hartid_cache_if),
+      .icache_s2_busy_i   (icache_s2_busy_cache_if),
+      .icache_s2_addr_i   (icache_s2_addr_cache_if),
+      .icache_s2_hartid_i (icache_s2_hartid_cache_if),
       .fetch_entry_o      (fetch_entry_if_id),
       .fetch_entry_valid_o(fetch_valid_if_id),
       .fetch_entry_ready_i(fetch_ready_id_if)
@@ -1375,6 +1392,12 @@ module cva6
         .icache_areq_o     (icache_areq_cache_ex),
         .icache_dreq_i     (icache_dreq_if_cache),
         .icache_dreq_o     (icache_dreq_cache_if),
+        .icache_s1_busy_o   (icache_s1_busy_cache_if),
+        .icache_s1_addr_o   (icache_s1_addr_cache_if),
+        .icache_s1_hartid_o (icache_s1_hartid_cache_if),
+        .icache_s2_busy_o   (icache_s2_busy_cache_if),
+        .icache_s2_addr_o   (icache_s2_addr_cache_if),
+        .icache_s2_hartid_o (icache_s2_hartid_cache_if),
         // D$
         .dcache_enable_i   (dcache_en_csr_nbdcache),
         .dcache_flush_i    (dcache_flush_ctrl_cache),
@@ -1434,6 +1457,12 @@ module cva6
         .icache_areq_o (icache_areq_cache_ex),
         .icache_dreq_i (icache_dreq_if_cache),
         .icache_dreq_o (icache_dreq_cache_if),
+        .icache_s1_busy_o   (icache_s1_busy_cache_if),
+        .icache_s1_addr_o   (icache_s1_addr_cache_if),
+        .icache_s1_hartid_o (icache_s1_hartid_cache_if),
+        .icache_s2_busy_o   (icache_s2_busy_cache_if),
+        .icache_s2_addr_o   (icache_s2_addr_cache_if),
+        .icache_s2_hartid_o (icache_s2_hartid_cache_if),
 
         .dcache_enable_i   (dcache_en_csr_nbdcache),
         .dcache_flush_i    (dcache_flush_ctrl_cache),

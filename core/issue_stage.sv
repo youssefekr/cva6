@@ -36,9 +36,9 @@ module issue_stage
     // Is scoreboard full - PERF_COUNTERS
     output logic sb_full_o,
     // Prevent from issuing - CONTROLLER
-    input logic flush_unissued_instr_i,
+    input logic [CVA6Cfg.NrHarts-1:0] flush_unissued_instr_i,
     // Flush whole scoreboard - CONTROLLER
-    input logic flush_i,
+    input logic [CVA6Cfg.NrHarts-1:0] flush_i,
     // Stall inserted by Acc dispatcher - ACC_DISPATCHER
     input logic stall_i,
     // Handshake's data with decode stage - ID_STAGE

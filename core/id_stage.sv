@@ -33,7 +33,7 @@ module id_stage #(
     // Asynchronous reset active low - SUBSYSTEM
     input logic rst_ni,
     // Fetch flush request - CONTROLLER
-    input logic flush_i,
+    input logic [CVA6Cfg.NrHarts-1:0] flush_i,
     // Debug (async) request - SUBSYSTEM
     input logic debug_req_i,
     // Handshake's data between fetch and decode - FRONTEND
@@ -423,6 +423,8 @@ module id_stage #(
       decoded_instruction_valid[0] = (CVA6Cfg.RVZCMT && is_zcmt_instr[0] && stall_macro_deco_zcmt) ||
                                      (CVA6Cfg.CvxifEn && is_illegal_cvxif_i && ~stall_macro_deco && stall_instr_fetch[0])
                                      ? 1'b0 : 1'b1;
+      // Hart ID
+      decoded_instruction[0] = fetch_entry_i[0].hartid;
       // Clear the valid flag if issue has acknowledged the instruction
       if (issue_instr_ack_i[0]) issue_n[0].valid = 1'b0;
 
@@ -441,7 +443,7 @@ module id_stage #(
       end
 
       // invalidate the pipeline register on a flush
-      if (flush_i) issue_n[0].valid = 1'b0;
+      issue_n[0].valid = !flush_i[issue_n[0].sbe.hartid];
     end
   end
   // -------------------------

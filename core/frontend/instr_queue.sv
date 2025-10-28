@@ -54,11 +54,13 @@ module instr_queue
     // Asynchronous reset active low - SUBSYSTEM
     input logic rst_ni,
     // Fetch flush request - CONTROLLER
-    input logic flush_i,
+    input logic [CVA6Cfg.NrHarts-1:0] flush_i,
     // Instruction - instr_realign
     input logic [CVA6Cfg.INSTR_PER_FETCH-1:0][31:0] instr_i,
     // Instruction address - instr_realign
     input logic [CVA6Cfg.INSTR_PER_FETCH-1:0][CVA6Cfg.VLEN-1:0] addr_i,
+    // Instruction address hart ID - instr_realign
+    input logic [CVA6Cfg.LOG2_HARTS-1:0] hartid_i,
     // Instruction is valid - instr_realign
     input logic [CVA6Cfg.INSTR_PER_FETCH-1:0] valid_i,
     // Handshake’s ready with CACHE - CACHE
@@ -80,6 +82,8 @@ module instr_queue
     output logic replay_o,
     // Address at which to replay the fetch - FRONTEND
     output logic [CVA6Cfg.VLEN-1:0] replay_addr_o,
+    // Hart ID at which to replay the fetch - FRONTEND
+    output logic [CVA6Cfg.LOG2_HARTS-1:0] replay_hartid_o,
     // Handshake’s data with ID_STAGE - ID_STAGE
     output fetch_entry_t [CVA6Cfg.NrIssuePorts-1:0] fetch_entry_o,
     // Handshake’s valid with ID_STAGE - ID_STAGE
@@ -99,6 +103,7 @@ module instr_queue
     logic [CVA6Cfg.GPLEN-1:0]        ex_gpaddr;  // lower GPLEN bits of tval2 for exception
     logic [31:0]                     ex_tinst;   // tinst of exception
     logic                            ex_gva;
+    logic [CVA6Cfg.LOG2_HARTS-1:0]    hartid;     // hart ID
   } instr_data_t;
 
   logic [CVA6Cfg.LOG2_INSTR_PER_FETCH-1:0] branch_index;
@@ -124,11 +129,12 @@ module instr_queue
   // rotated by N
   logic [CVA6Cfg.NrIssuePorts:0][CVA6Cfg.INSTR_PER_FETCH-1:0] idx_ds;
 
-  logic [CVA6Cfg.VLEN-1:0] pc_d, pc_q;  // current PC
+  logic [CVA6Cfg.NrHarts-1:0][CVA6Cfg.VLEN-1:0] pc_d, pc_q;  // current PC
   logic [CVA6Cfg.NrIssuePorts:0][CVA6Cfg.VLEN-1:0] pc_j;
-  logic reset_address_d, reset_address_q;  // we need to re-set the address because of a flush
+  logic [CVA6Cfg.NrHarts-1:0] reset_address_d, reset_address_q;  // we need to re-set the address because of a flush
 
   logic [CVA6Cfg.NrIssuePorts-1:0] fetch_entry_is_cf, fetch_entry_fire;
+  logic fetch_entry_flushed;
 
   logic [CVA6Cfg.INSTR_PER_FETCH*2-2:0] branch_mask_extended;
   logic [CVA6Cfg.INSTR_PER_FETCH-1:0] branch_mask;
@@ -145,6 +151,9 @@ module instr_queue
   ariane_pkg::cf_t [CVA6Cfg.INSTR_PER_FETCH*2-1:0] cf;
   // replay interface
   logic [CVA6Cfg.INSTR_PER_FETCH-1:0] instr_overflow_fifo;
+
+  // flushed flag signals
+  logic [CVA6Cfg.INSTR_PER_FETCH-1:0] flushed;
 
   assign ready_o = ~(|instr_queue_full) & ~full_address;
 
@@ -217,6 +226,7 @@ module instr_queue
       assign instr_data_in[i].cf = cf[CVA6Cfg.INSTR_PER_FETCH+i-idx_is_q];
       assign instr_data_in[i].ex = exception_i;  // exceptions hold for the whole fetch packet
       assign instr_data_in[i].ex_vaddr = exception_addr_i;
+      assign instr_data_in[i].hartid = hartid_i; // hartid hold for the whole fetch packet
       if (CVA6Cfg.RVH) begin : gen_hyp_ex_with_C
         assign instr_data_in[i].ex_gpaddr = exception_gpaddr_i;
         assign instr_data_in[i].ex_tinst = exception_tinst_i;
@@ -292,12 +302,13 @@ module instr_queue
   end else begin : gen_replay_addr_o_without_C
     assign replay_addr_o = addr_i[0];
   end
+  assign replay_hartid_o = hartid_i;
 
   // ----------------------
   // Downstream interface
   // ----------------------
   // as long as there is at least one queue which can take the value we have a valid instruction
-  assign fetch_entry_valid_o[0] = ~(&instr_queue_empty);
+  assign fetch_entry_valid_o[0] = ~(&instr_queue_empty) && !fetch_entry_flushed;
   if (CVA6Cfg.SuperscalarEn) begin : gen_fetch_entry_valid_1
     // TODO Maybe this additional fetch_entry_is_cf check is useless as issue-stage already performs it?
     assign fetch_entry_valid_o[NID] = ~|(instr_queue_empty & idx_ds[1]) & ~(&fetch_entry_is_cf);
@@ -322,6 +333,7 @@ module instr_queue
       // assemble fetch entry
       for (int unsigned i = 0; i < CVA6Cfg.NrIssuePorts; i++) begin
         fetch_entry_o[i].instruction = '0;
+        fetch_entry_o[i].hartid = '0;
         fetch_entry_o[i].address = pc_j[i];
         fetch_entry_o[i].ex.valid = 1'b0;
         fetch_entry_o[i].ex.cause = '0;
@@ -334,10 +346,13 @@ module instr_queue
         fetch_entry_o[i].branch_predict.cf = ariane_pkg::NoCF;
       end
 
+      fetch_entry_flushed = 1'b0;
+
       // output mux select
       for (int unsigned i = 0; i < CVA6Cfg.INSTR_PER_FETCH; i++) begin
         // TODO handle fetch_entry_o[1] if superscalar
         if (idx_ds[0][i]) begin
+          fetch_entry_flushed = flushed[i];
           if (instr_data_out[i].ex == ariane_pkg::FE_INSTR_ACCESS_FAULT) begin
             fetch_entry_o[0].ex.cause = riscv::INSTR_ACCESS_FAULT;
           end else if (CVA6Cfg.RVH && instr_data_out[i].ex == ariane_pkg::FE_INSTR_GUEST_PAGE_FAULT) begin
@@ -346,6 +361,7 @@ module instr_queue
             fetch_entry_o[0].ex.cause = riscv::INSTR_PAGE_FAULT;
           end
           fetch_entry_o[0].instruction = instr_data_out[i].instr;
+          fetch_entry_o[0].hartid = instr_data_out[i].hartid;
           fetch_entry_o[0].ex.valid = instr_data_out[i].ex != ariane_pkg::FE_NONE;
           if (CVA6Cfg.TvalEn)
             fetch_entry_o[0].ex.tval = {
@@ -389,7 +405,9 @@ module instr_queue
     always_comb begin
       idx_ds_d = '0;
       idx_is_d = '0;
+      fetch_entry_flushed = flushed[0];
       fetch_entry_o[0].instruction = instr_data_out[0].instr;
+      fetch_entry_o[0].hartid = instr_data_out[0].hartid;
       fetch_entry_o[0].address = pc_q;
 
       fetch_entry_o[0].ex.valid = instr_data_out[0].ex != ariane_pkg::FE_NONE;
@@ -414,13 +432,13 @@ module instr_queue
       fetch_entry_o[0].branch_predict.predict_address = address_out;
       fetch_entry_o[0].branch_predict.cf = instr_data_out[0].cf;
 
-      pop_instr[0] = fetch_entry_valid_o[0] & fetch_entry_ready_i[0];
+      pop_instr[0] = fetch_entry_fire[0];
     end
   end
 
   for (genvar i = 0; i < CVA6Cfg.NrIssuePorts; i++) begin
     assign fetch_entry_is_cf[i] = fetch_entry_o[i].branch_predict.cf != ariane_pkg::NoCF;
-    assign fetch_entry_fire[i]  = fetch_entry_valid_o[i] & fetch_entry_ready_i[i];
+    assign fetch_entry_fire[i]  = fetch_entry_flushed | fetch_entry_valid_o[i] & fetch_entry_ready_i[i];
   end
 
   assign pop_address = |(fetch_entry_is_cf & fetch_entry_fire);
@@ -428,7 +446,7 @@ module instr_queue
   // ----------------------
   // Calculate (Next) PC
   // ----------------------
-  assign pc_j[0] = pc_q;
+  assign pc_j[0] = pc_q[fetch_entry_o[0].hartid];
   for (genvar i = 0; i < CVA6Cfg.NrIssuePorts; i++) begin
     assign pc_j[i+1] = fetch_entry_is_cf[i] ? address_out : (
       pc_j[i] + ((fetch_entry_o[i].instruction[1:0] != 2'b11) ? 'd2 : 'd4)
@@ -437,10 +455,10 @@ module instr_queue
 
   always_comb begin
     pc_d = pc_q;
-    reset_address_d = flush_i ? 1'b1 : reset_address_q;
+    reset_address_d = flush_i | reset_address_q;
 
     if (fetch_entry_fire[0]) begin
-      pc_d = pc_j[1];
+      pc_d[fetch_entry_o[0].hartid] = pc_j[1];
       if (CVA6Cfg.SuperscalarEn) begin
         if (fetch_entry_fire[NID]) begin
           pc_d = pc_j[2];
@@ -449,10 +467,10 @@ module instr_queue
     end
 
     // we previously flushed so we need to reset the address
-    if (valid_i[0] && reset_address_q) begin
+    if (valid_i[0] && reset_address_q[hartid_i]) begin
       // this is the base of the first instruction
-      pc_d = addr_i[0];
-      reset_address_d = 1'b0;
+      pc_d[hartid_i] = addr_i[0];
+      reset_address_d[hartid_i] = 1'b0;
     end
   end
 
@@ -460,24 +478,48 @@ module instr_queue
   for (genvar i = 0; i < CVA6Cfg.INSTR_PER_FETCH; i++) begin : gen_instr_fifo
     // Make sure we don't save any instructions if we couldn't save the address
     assign push_instr_fifo[i] = push_instr[i] & ~address_overflow;
-    cva6_fifo_v3 #(
-        .FPGA_ALTERA(CVA6Cfg.FpgaAlteraEn),
-        .DEPTH(ariane_pkg::FETCH_FIFO_DEPTH),
-        .dtype(instr_data_t),
-        .FPGA_EN(CVA6Cfg.FpgaEn)
-    ) i_fifo_instr_data (
-        .clk_i     (clk_i),
-        .rst_ni    (rst_ni),
-        .flush_i   (flush_i),
-        .testmode_i(1'b0),
-        .full_o    (instr_queue_full[i]),
-        .empty_o   (instr_queue_empty[i]),
-        .usage_o   (),
-        .data_i    (instr_data_in[i]),
-        .push_i    (push_instr_fifo[i]),
-        .data_o    (instr_data_out[i]),
-        .pop_i     (pop_instr[i])
-    );
+    if (CVA6Cfg.MultihartEn) begin
+      cva6_fifo_mt #(
+          .FPGA_ALTERA(CVA6Cfg.FpgaAlteraEn),
+          .DEPTH(ariane_pkg::FETCH_FIFO_DEPTH),
+          .dtype(instr_data_t),
+          .FPGA_EN(CVA6Cfg.FpgaEn),
+          .NrHarts(CVA6Cfg.NrHarts)
+      ) i_fifo_instr_data (
+          .clk_i     (clk_i),
+          .rst_ni    (rst_ni),
+          .flush_i   (flush_i),
+          .testmode_i(1'b0),
+          .full_o    (instr_queue_full[i]),
+          .empty_o   (instr_queue_empty[i]),
+          .usage_o   (),
+          .data_i    (instr_data_in[i]),
+          .push_i    (push_instr_fifo[i]),
+          .data_o    (instr_data_out[i]),
+          .flushed_o (flushed[i]),
+          .pop_i     (pop_instr[i])
+      );
+    end else begin
+      cva6_fifo_v3 #(
+          .FPGA_ALTERA(CVA6Cfg.FpgaAlteraEn),
+          .DEPTH(ariane_pkg::FETCH_FIFO_DEPTH),
+          .dtype(instr_data_t),
+          .FPGA_EN(CVA6Cfg.FpgaEn)
+      ) i_fifo_instr_data (
+          .clk_i     (clk_i),
+          .rst_ni    (rst_ni),
+          .flush_i   (flush_i),
+          .testmode_i(1'b0),
+          .full_o    (instr_queue_full[i]),
+          .empty_o   (instr_queue_empty[i]),
+          .usage_o   (),
+          .data_i    (instr_data_in[i]),
+          .push_i    (push_instr_fifo[i]),
+          .data_o    (instr_data_out[i]),
+          .pop_i     (pop_instr[i])
+      );
+      assign flushed = '0;
+    end
   end
   // or reduce and check whether we are retiring a taken branch (might be that the corresponding)
   // fifo is full.
@@ -497,7 +539,7 @@ module instr_queue
   ) i_fifo_address (
       .clk_i     (clk_i),
       .rst_ni    (rst_ni),
-      .flush_i   (flush_i),
+      .flush_i   (CVA6Cfg.MultihartEn ? 1'b0 : flush_i),
       .testmode_i(1'b0),
       .full_o    (full_address),
       .empty_o   (),
@@ -517,11 +559,11 @@ module instr_queue
         idx_ds_q        <= 'b1;
         idx_is_q        <= '0;
         pc_q            <= '0;
-        reset_address_q <= 1'b1;
+        reset_address_q <= '1;
       end else begin
         pc_q            <= pc_d;
         reset_address_q <= reset_address_d;
-        if (flush_i) begin
+        if (!CVA6Cfg.MultihartEn && flush_i) begin
           // one-hot encoded
           idx_ds_q        <= 'b1;
           // binary encoded
@@ -543,9 +585,6 @@ module instr_queue
       end else begin
         pc_q            <= pc_d;
         reset_address_q <= reset_address_d;
-        if (flush_i) begin
-          reset_address_q <= 1'b1;
-        end
       end
     end
   end

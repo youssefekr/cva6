@@ -202,6 +202,8 @@ package config_pkg;
     bit                          FpgaAlteraEn;
     // Is Techno Cut instantiated
     bit                          TechnoCut;
+
+    bit                          MultihartEn;
     // Enable superscalar* with 2 issue ports and 2 commit ports.
     bit                          SuperscalarEn;
     // Enable ALU-ALU bypass (superscalar mode only)
@@ -253,6 +255,9 @@ package config_pkg;
     bit FpgaAlteraEn;
     bit TechnoCut;
 
+    bit          MultihartEn;
+    int unsigned NrHarts;
+    int unsigned LOG2_HARTS;
     bit          SuperscalarEn;
     int unsigned NrCommitPorts;
     int unsigned NrIssuePorts;

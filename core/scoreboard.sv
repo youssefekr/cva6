@@ -28,9 +28,9 @@ module scoreboard #(
     // Is scoreboard full - PERF_COUNTERS
     output logic                                          sb_full_o,
     // Prevent from issuing - CONTROLLER
-    input  logic                                          flush_unissued_instr_i,
+    input  logic [CVA6Cfg.NrHarts-1:0]                    flush_unissued_instr_i,
     // Flush whole scoreboard - CONTROLLER
-    input  logic                                          flush_i,
+    input  logic [CVA6Cfg.NrHarts-1:0]                    flush_i,
     // Writeback Handling of CVXIF
     // TO_BE_COMPLETED - ISSUE_READ_OPERANDS
     input  logic                                          x_transaction_accepted_i,
@@ -94,6 +94,7 @@ module scoreboard #(
   typedef struct packed {
     logic issued;  // this bit indicates whether we issued this instruction e.g.: if it is valid
     logic cancelled;  // this instruction was cancelled (speculative scoreboard)
+    logic flushed;  // this instruction was flushed (multi-hart support)
     logic is_rd_fpr_flag;  // redundant meta info, added for speed
     scoreboard_entry_t sbe;  // this is the score board entry we will send to ex
   } sb_mem_t;
@@ -111,8 +112,11 @@ module scoreboard #(
   logic [CVA6Cfg.TRANS_ID_BITS-1:0] issue_pointer_n, issue_pointer_q;
   logic [CVA6Cfg.NrIssuePorts:0][CVA6Cfg.TRANS_ID_BITS-1:0] issue_pointer;
 
-  logic [CVA6Cfg.NrCommitPorts-1:0][CVA6Cfg.TRANS_ID_BITS-1:0] commit_pointer_n, commit_pointer_q;
+  logic [CVA6Cfg.NrCommitPorts-1:0][CVA6Cfg.TRANS_ID_BITS-1:0] commit_pointer_n, commit_pointer_q, commit_pointer;
   logic [$clog2(CVA6Cfg.NrCommitPorts):0] num_commit;
+
+  logic [CVA6Cfg.TRANS_ID_BITS-1:0] flushed_count, flushed_idx;
+  logic [CVA6Cfg.NR_SB_ENTRIES-1:0] flushed;
 
   for (genvar i = 0; i < CVA6Cfg.NR_SB_ENTRIES; i++) begin
     assign still_issued[i] = mem_q[i].issued & ~mem_q[i].cancelled;
@@ -132,12 +136,25 @@ module scoreboard #(
 
   assign sb_full_o = issue_full[0];
 
+  // skip flushed entries
+  if (CVA6Cfg.MultihartEn) begin
+    always_comb begin
+      for (int unsigned i = 0; i < CVA6Cfg.NR_SB_ENTRIES; i++) begin
+        flushed_idx = i + commit_pointer_q[0];
+        flushed[flushed_idx] = mem_q[flushed_idx].flushed;
+      end
+      commit_pointer[0] = commit_pointer_q[0] + flushed_count;
+    end
+  end else begin
+    assign commit_pointer[0] = commit_pointer_q[0];
+  end
+
   // output commit instruction directly
   always_comb begin : commit_ports
     for (int unsigned i = 0; i < CVA6Cfg.NrCommitPorts; i++) begin
-      commit_instr_o[i] = mem_q[commit_pointer_q[i]].sbe;
-      commit_instr_o[i].trans_id = commit_pointer_q[i];
-      commit_drop_o[i] = mem_q[commit_pointer_q[i]].cancelled;
+      commit_instr_o[i] = mem_q[commit_pointer[i]].sbe;
+      commit_instr_o[i].trans_id = commit_pointer[i];
+      commit_drop_o[i] = mem_q[commit_pointer[i]].cancelled;
     end
   end
 
@@ -168,13 +185,14 @@ module scoreboard #(
 
     // if we got an acknowledge from the issue stage, put this scoreboard entry in the queue
     for (int unsigned i = 0; i < CVA6Cfg.NrIssuePorts; i++) begin
-      if (decoded_instr_valid_i[i] && decoded_instr_ack_o[i] && !flush_unissued_instr_i) begin
+      if (decoded_instr_valid_i[i] && decoded_instr_ack_o[i] && !flush_unissued_instr_i[decoded_instr_i[i].hartid]) begin
         // the decoded instruction we put in there is valid (1st bit)
         // increase the issue counter and advance issue pointer
         num_issue += 'd1;
         mem_n[issue_pointer[i]] = '{
             issued: 1'b1,
             cancelled: 1'b0,
+            flushed: 1'b0,
             is_rd_fpr_flag: CVA6Cfg.FpPresent && ariane_pkg::is_rd_fpr(decoded_instr_i[i].op),
             sbe: decoded_instr_i[i]
         };
@@ -235,6 +253,31 @@ module scoreboard #(
       end
     end
 
+    // ------
+    // Flush
+    // ------
+    if (CVA6Cfg.MultihartEn) begin
+      for (int unsigned i = 0; i < CVA6Cfg.NR_SB_ENTRIES; i++) begin
+        mem_n[i].flushed = mem_q[i].flushed || flush_i[mem_q[i].sbe.hartid] && mem_q[i].issued;
+      end
+
+      for (int unsigned i = 0; i < flushed_count; i++) begin
+        flushed_idx = commit_pointer[0] + i;
+        mem_n[flushed_idx].issued    = 1'b0;
+        mem_n[flushed_idx].cancelled = 1'b0;
+        mem_n[flushed_idx].flushed   = 1'b0;
+        mem_n[flushed_idx].sbe.valid = 1'b0;
+      end
+    end else begin
+      if (flush_i) begin
+        for (int unsigned i = 0; i < CVA6Cfg.NR_SB_ENTRIES; i++) begin
+          mem_n[i].issued    = 1'b0;
+          mem_n[i].cancelled = 1'b0;
+          mem_n[i].flushed   = 1'b0;
+          mem_n[i].sbe.valid = 1'b0;
+        end
+      end
+    end
     // ------------
     // Commit Port
     // ------------
@@ -242,24 +285,13 @@ module scoreboard #(
     for (int i = 0; i < CVA6Cfg.NrCommitPorts; i++) begin
       if (commit_ack_i[i]) begin
         // this instruction is no longer in issue e.g.: it is considered finished
-        mem_n[commit_pointer_q[i]].issued    = 1'b0;
-        mem_n[commit_pointer_q[i]].cancelled = 1'b0;
-        mem_n[commit_pointer_q[i]].sbe.valid = 1'b0;
+        mem_n[commit_pointer[i]].issued    = 1'b0;
+        mem_n[commit_pointer[i]].cancelled = 1'b0;
+        mem_n[commit_pointer[i]].flushed   = 1'b0;
+        mem_n[commit_pointer[i]].sbe.valid = 1'b0;
       end
     end
 
-    // ------
-    // Flush
-    // ------
-    if (flush_i) begin
-      for (int unsigned i = 0; i < CVA6Cfg.NR_SB_ENTRIES; i++) begin
-        // set all valid flags for all entries to zero
-        mem_n[i].issued       = 1'b0;
-        mem_n[i].cancelled    = 1'b0;
-        mem_n[i].sbe.valid    = 1'b0;
-        mem_n[i].sbe.ex.valid = 1'b0;
-      end
-    end
   end
 
   assign bmiss = resolved_branch_i.valid && resolved_branch_i.is_mispredict;
@@ -272,7 +304,18 @@ module scoreboard #(
     assign num_commit = commit_ack_i[0];
   end
 
-  assign commit_pointer_n[0] = (flush_i) ? '0 : commit_pointer_q[0] + num_commit;
+  if (CVA6Cfg.MultihartEn) begin
+    lzc #(
+        .WIDTH(CVA6Cfg.NR_SB_ENTRIES),
+        .MODE (0)  
+    ) i_lzc_flush (
+        .in_i(~flushed),
+        .cnt_o(flushed_count),
+        .empty_o()
+    );
+  end
+
+  assign commit_pointer_n[0] = commit_pointer[0] + num_commit;
 
   always_comb begin : assign_issue_pointer_n
     issue_pointer_n = issue_pointer[num_issue];

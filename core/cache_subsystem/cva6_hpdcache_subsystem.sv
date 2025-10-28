@@ -73,6 +73,13 @@ module cva6_hpdcache_subsystem
     input icache_dreq_t icache_dreq_i,
     // Output data translation request - FRONTEND
     output icache_drsp_t icache_dreq_o,
+    // stage signals for replay - FRONTEND
+    output logic         icache_s1_busy_o,
+    output logic [CVA6Cfg.VLEN-1:0] icache_s1_addr_o,
+    output logic [CVA6Cfg.LOG2_HARTS-1:0] icache_s1_hartid_o,
+    output logic         icache_s2_busy_o,
+    output logic [CVA6Cfg.VLEN-1:0] icache_s2_addr_o,
+    output logic [CVA6Cfg.LOG2_HARTS-1:0] icache_s2_hartid_o,
     //   }}}
 
     //  D$
@@ -170,7 +177,13 @@ module cva6_hpdcache_subsystem
       .mem_rtrn_i    (icache_miss_resp),
       .mem_data_req_o(icache_miss_valid),
       .mem_data_ack_i(icache_miss_ready),
-      .mem_data_o    (icache_miss)
+      .mem_data_o    (icache_miss),
+      .s1_busy_o     (icache_s1_busy_o),
+      .s1_addr_o     (icache_s1_addr_o),
+      .s1_hartid_o   (icache_s1_hartid_o),
+      .s2_busy_o     (icache_s2_busy_o),
+      .s2_addr_o     (icache_s2_addr_o),
+      .s2_hartid_o   (icache_s2_hartid_o)
   );
   //  }}}
 

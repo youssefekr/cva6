@@ -48,6 +48,13 @@ module wt_cache_subsystem
     // data requests
     input icache_dreq_t icache_dreq_i,  // to/from frontend
     output icache_drsp_t icache_dreq_o,
+        // stage signals for replay - FRONTEND
+    output logic         icache_s1_busy_o,
+    output logic [CVA6Cfg.VLEN-1:0] icache_s1_addr_o,
+    output logic [CVA6Cfg.LOG2_HARTS-1:0] icache_s1_hartid_o,
+    output logic         icache_s2_busy_o,
+    output logic [CVA6Cfg.VLEN-1:0] icache_s2_addr_o,
+    output logic [CVA6Cfg.LOG2_HARTS-1:0] icache_s2_hartid_o,
     // D$
     // Cache management
     input logic dcache_enable_i,  // from CSR
@@ -136,7 +143,13 @@ module wt_cache_subsystem
       .mem_rtrn_i    (adapter_icache),
       .mem_data_req_o(icache_adapter_data_req),
       .mem_data_ack_i(adapter_icache_data_ack),
-      .mem_data_o    (icache_adapter)
+      .mem_data_o    (icache_adapter),
+      .s1_busy_o     (icache_s1_busy_o),
+      .s1_addr_o     (icache_s1_addr_o),
+      .s1_hartid_o   (icache_s1_hartid_o),
+      .s2_busy_o     (icache_s2_busy_o),
+      .s2_addr_o     (icache_s2_addr_o),
+      .s2_hartid_o   (icache_s2_hartid_o)
   );
 
 
