@@ -50,6 +50,8 @@ module decoder
     input logic is_double_rd_macro_instr_i,
     // Zcmt instruction - FRONTEND
     input logic is_zcmt_i,
+    // Hart ID - FRONTEND
+    input logic [CVA6Cfg.LOG2_HARTS-1:0] hartid_i,
     // Jump address - zcmt_decoder
     input logic [CVA6Cfg.XLEN-1:0] jump_address_i,
     // Is a branch predict instruction - FRONTEND
@@ -84,25 +86,12 @@ module decoder
     input logic tsr_i,
     // Hypervisor user mode - CSR_REGFILE
     input logic hu_i,
-    // machine-mode cache block invalidate enable - CSR_REGFILE
-    input riscv::cbie_t mcbie_i,
-    // supervisor-mode cache block invalidate enable - CSR_REGFILE
-    input riscv::cbie_t scbie_i,
-    // hypervisor-mode cache block invalidate enable - CSR_REGFILE
-    input riscv::cbie_t hcbie_i,
-    // machine-mode clean/flush cache block invalidate enable - CSR_REGFILE
-    input logic mcbcfe_i,
-    // supervisor-mode clean/flush cache block invalidate enable - CSR_REGFILE
-    input logic scbcfe_i,
-    // hypervisor-mode clean/flush cache block invalidate enable - CSR_REGFILE
-    input logic hcbcfe_i,
     // Instruction to be added to scoreboard entry - ISSUE_STAGE
     output scoreboard_entry_t instruction_o,
     // Instruction - ISSUE_STAGE
     output logic [31:0] orig_instr_o,
     // Is a control flow instruction - ISSUE_STAGE
-    output logic is_control_flow_instr_o,
-    input debug_from_trigger_i
+    output logic is_control_flow_instr_o
 );
   logic illegal_instr;
   logic illegal_instr_bm;
@@ -196,6 +185,7 @@ module decoder
     instruction_o.bp                       = branch_predict_i;
     instruction_o.vfp                      = 1'b0;
     instruction_o.is_zcmt                  = is_zcmt_i;
+    instruction_o.hartid                   = hartid_i;
     ecall                                  = 1'b0;
     ebreak                                 = 1'b0;
     check_fprm                             = 1'b0;
@@ -468,70 +458,6 @@ module decoder
             3'b000: instruction_o.op = ariane_pkg::FENCE;
             // FENCE.I
             3'b001: instruction_o.op = ariane_pkg::FENCE_I;
-            // CBO - optional
-            3'b010: begin
-              if (CVA6Cfg.RVZiCbom) begin
-                instruction_o.fu = STORE;
-                instruction_o.rs1[4:0] = instr.itype.rs1;
-                // not used - zero
-                instruction_o.rs2[4:0] = '0;
-                unique case (instr.itype.imm)
-                  // CBO.INVAL
-                  12'b000000000000: instruction_o.op = ariane_pkg::CBO_INVAL;
-                  // CBO.CLEAN
-                  12'b000000000001: instruction_o.op = ariane_pkg::CBO_CLEAN;
-                  // CBO.FLUSH
-                  12'b000000000010: instruction_o.op = ariane_pkg::CBO_FLUSH;
-                  default: illegal_instr = 1'b1;
-                endcase
-
-                if (instruction_o.op == ariane_pkg::CBO_INVAL) begin
-                  // permissions checks
-                  if((priv_lvl_i != riscv::PRIV_LVL_M && mcbie_i == riscv::CBIE_ILLEGAL) ||
-                    (CVA6Cfg.RVU && priv_lvl_i == riscv::PRIV_LVL_U && scbie_i == riscv::CBIE_ILLEGAL)) begin
-                    // disabled in M-mode / S-mode
-                    illegal_instr = 1'b1;
-                  end
-                  else if((priv_lvl_i == riscv::PRIV_LVL_HS && hcbie_i == riscv::CBIE_ILLEGAL) ||
-                    (priv_lvl_i == riscv::PRIV_LVL_U && hu_i) ) begin
-                    // disabled in HS-mode / H-mode
-                    virtual_illegal_instr = 1'b1;
-                  end else begin
-                    if((priv_lvl_i != riscv::PRIV_LVL_M && mcbie_i == riscv::CBIE_FLUSH) || 
-                      (priv_lvl_i == riscv::PRIV_LVL_U && scbie_i == riscv::CBIE_FLUSH) ||
-                      (priv_lvl_i == riscv::PRIV_LVL_HS && hcbie_i == riscv::CBIE_FLUSH) ||
-                      (priv_lvl_i == riscv::PRIV_LVL_U && hu_i && (hcbie_i == riscv::CBIE_FLUSH || scbie_i == riscv::CBIE_FLUSH))) begin
-                      // have to flush instead of invalidate
-                      instruction_o.op = ariane_pkg::CBO_FLUSH;
-                    end
-                  end
-                  // otherwise: normal invalidate
-                end
-
-                if (instruction_o.op inside {ariane_pkg::CBO_CLEAN, ariane_pkg::CBO_FLUSH}) begin
-                  if((priv_lvl_i != riscv::PRIV_LVL_M && !mcbcfe_i) ||
-                    (priv_lvl_i == riscv::PRIV_LVL_U && !scbcfe_i)) begin
-                    // disabled in m-mode / s-mode
-                    illegal_instr = 1'b1;
-                  end
-                  else if((priv_lvl_i == riscv::PRIV_LVL_HS && !hcbcfe_i) ||
-                          (priv_lvl_i == riscv::PRIV_LVL_U && hu_i && !(hcbcfe_i && scbcfe_i))) begin
-                    // disabled in HS-mode / H-mode
-                    virtual_illegal_instr = 1'b1;
-                  end
-                  // otherwise: normal flush / clean
-                end
-              end else begin
-                illegal_instr = 1'b1;
-              end
-
-              if (CVA6Cfg.RVH) begin
-                tinst = {
-                  instr.itype.imm, 5'b00000, instr.stype.funct3, 5'b00000, instr.stype.opcode
-                };
-              end
-            end
-
 
             default: illegal_instr = 1'b1;
           endcase
@@ -1977,8 +1903,8 @@ module decoder
       end
     end
 
-    // a debug request has precendece over everything else
-    if ((CVA6Cfg.DebugEn && debug_req_i && !debug_mode_i) || (CVA6Cfg.SDTRIG && CVA6Cfg.Mcontrol6 && CVA6Cfg.DebugEn && !debug_mode_i && debug_from_trigger_i)) begin
+    // a debug request has precedence over everything else
+    if (CVA6Cfg.DebugEn && debug_req_i && !debug_mode_i) begin
       instruction_o.ex.valid = 1'b1;
       instruction_o.ex.cause = riscv::DEBUG_REQUEST;
     end
