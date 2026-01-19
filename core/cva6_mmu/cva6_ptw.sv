@@ -59,6 +59,7 @@ module cva6_ptw
     output tlb_update_cva6_t shared_tlb_update_o,
 
     output logic [CVA6Cfg.VLEN-1:0] update_vaddr_o,
+    output logic [CVA6Cfg.LOG2_HARTS-1:0] update_hartid_o,
 
     input logic [CVA6Cfg.ASID_WIDTH-1:0] asid_i,
     input logic [CVA6Cfg.ASID_WIDTH-1:0] vs_asid_i,
@@ -69,6 +70,7 @@ module cva6_ptw
     input logic                    shared_tlb_access_i,
     input logic                    shared_tlb_hit_i,
     input logic [CVA6Cfg.VLEN-1:0] shared_tlb_vaddr_i,
+    input logic [CVA6Cfg.LOG2_HARTS-1:0] shared_tlb_hartid_i,
 
     input logic itlb_req_i,
 
@@ -96,10 +98,6 @@ module cva6_ptw
   pte_cva6_t pte;
   // register to perform context switch between stages
   pte_cva6_t gpte_q, gpte_d;
-
-  //Field for SVNAPOT
-  logic is_napot_64k;
-
   assign pte = pte_cva6_t'(data_rdata_q);
 
   enum logic [2:0] {
@@ -109,7 +107,6 @@ module cva6_ptw
     WAIT_RVALID,
     PROPAGATE_ERROR,
     PROPAGATE_ACCESS_ERROR,
-    KILL_REQ,
     LATENCY
   }
       state_q, state_d;
@@ -134,14 +131,13 @@ module cva6_ptw
   logic global_mapping_q, global_mapping_n;
   // latched tag signal
   logic tag_valid_n, tag_valid_q;
-  // latched kill signal
-  logic kill_req_n, kill_req_q;
   // register the ASID
   logic [CVA6Cfg.ASID_WIDTH-1:0] tlb_update_asid_q, tlb_update_asid_n;
   // register the VMID
   logic [CVA6Cfg.VMID_WIDTH-1:0] tlb_update_vmid_q, tlb_update_vmid_n;
   // register the VPN we need to walk, SV39 defines a 39 bit virtual address
   logic [CVA6Cfg.VLEN-1:0] vaddr_q, vaddr_n;
+  logic [CVA6Cfg.LOG2_HARTS-1:0] hartid_q, hartid_n;
   logic [HYP_EXT*2:0][CVA6Cfg.PtLevels-2:0][(CVA6Cfg.VpnLen/CVA6Cfg.PtLevels)-1:0] vaddr_lvl;
   // register the VPN we need to walk, SV39x4 defines a 41 bit virtual address for the G-Stage
   logic [CVA6Cfg.GPLEN-1:0] gpaddr_q, gpaddr_n, gpaddr_base;
@@ -152,20 +148,19 @@ module cva6_ptw
 
   // Assignments
   assign update_vaddr_o = vaddr_q;
+  assign update_hartid_o = hartid_q;
 
   assign ptw_active_o = (state_q != IDLE);
   assign walking_instr_o = is_instr_ptw_q;
   // directly output the correct physical address
   assign req_port_o.address_index = ptw_pptr_q[CVA6Cfg.DCACHE_INDEX_WIDTH-1:0];
   assign req_port_o.address_tag   = ptw_pptr_q[CVA6Cfg.DCACHE_INDEX_WIDTH+CVA6Cfg.DCACHE_TAG_WIDTH-1:CVA6Cfg.DCACHE_INDEX_WIDTH];
+  // we are never going to kill this request
+  assign req_port_o.kill_req = '0;
   // we are never going to write with the HPTW
   assign req_port_o.data_wdata = '0;
   // we only issue one single request at a time
   assign req_port_o.data_id = '0;
-  // user field not used
-  assign req_port_o.data_wuser = '0;
-  // not a write
-  assign req_port_o.cbo_op = ariane_pkg::CBO_NONE;
 
   // -----------
   // TLB Update
@@ -202,7 +197,6 @@ module cva6_ptw
 
   always_comb begin : tlb_update
     shared_tlb_update_o.valid = shared_tlb_update_valid;
-    shared_tlb_update_o.is_napot_64k = is_napot_64k;
 
     // update the correct page table level
     for (int unsigned y = 0; y < HYP_EXT + 1; y++) begin
@@ -240,7 +234,6 @@ module cva6_ptw
   end
 
   assign req_port_o.tag_valid = tag_valid_q;
-  assign req_port_o.kill_req  = (state_q == KILL_REQ);
 
   logic allow_access;
 
@@ -296,7 +289,6 @@ module cva6_ptw
     // default assignments
     // PTW memory interface
     tag_valid_n             = 1'b0;
-    kill_req_n              = kill_req_q;
     req_port_o.data_req     = 1'b0;
     req_port_o.data_size    = 2'(CVA6Cfg.PtLevels);
     req_port_o.data_we      = 1'b0;
@@ -305,7 +297,6 @@ module cva6_ptw
     ptw_err_at_g_int_st_o   = 1'b0;
     ptw_access_exception_o  = 1'b0;
     shared_tlb_update_valid = 1'b0;
-    is_napot_64k            = 1'b0;
     is_instr_ptw_n          = is_instr_ptw_q;
     ptw_lvl_n               = ptw_lvl_q;
     ptw_pptr_n              = ptw_pptr_q;
@@ -316,6 +307,7 @@ module cva6_ptw
     // input registers
     tlb_update_asid_n       = tlb_update_asid_q;
     vaddr_n                 = vaddr_q;
+    hartid_n                = hartid_q;
     pptr                    = ptw_pptr_q;
 
     if (CVA6Cfg.RVH) begin
@@ -384,6 +376,7 @@ module cva6_ptw
 
           is_instr_ptw_n    = itlb_req_i;
           vaddr_n           = shared_tlb_vaddr_i;
+          hartid_n          = shared_tlb_hartid_i;
           state_d           = WAIT_GRANT;
           shared_tlb_miss_o = 1'b1;
 
@@ -404,15 +397,8 @@ module cva6_ptw
         if (req_port_i.data_gnt) begin
           // send the tag valid signal one cycle later
           tag_valid_n = 1'b1;
-          // if the request has been flushed, kill it one cycle later
-          state_d = (kill_req_q || flush_i) ? KILL_REQ : PTE_LOOKUP;
+          state_d     = PTE_LOOKUP;
         end
-      end
-
-      KILL_REQ: begin
-        kill_req_n = 1'b0;
-        // even when killed, the request sends a response
-        state_d = WAIT_RVALID;
       end
 
       PTE_LOOKUP: begin
@@ -426,26 +412,15 @@ module cva6_ptw
           // Invalid PTE
           // -------------
           // If pte.v = 0, or if pte.r = 0 and pte.w = 1, or if pte.reserved !=0 in sv39 and sv39x4, stop and raise a page-fault exception.
-          if (!pte.v || (!pte.r && pte.w) || (|pte.reserved && CVA6Cfg.XLEN == 64) || (!CVA6Cfg.SvnapotEn && pte.n) || (CVA6Cfg.SvnapotEn && !(pte.r || pte.x) && pte.n))
+          if (!pte.v || (!pte.r && pte.w) || (|pte.reserved && CVA6Cfg.XLEN == 64))
             state_d = PROPAGATE_ERROR;
           // -----------
           // Valid PTE
           // -----------
           else begin
             state_d = LATENCY;
-            // if pte.r = 1 or pte.x = 1 it is a valid leaf PTE
+            // it is a valid PTE if pte.r = 1 or pte.x = 1
             if (pte.r || pte.x) begin
-              // A 64KiB NAPOT page is identified by the N-bit being set and PPN[3:0] encoding '1000'
-              if (CVA6Cfg.SvnapotEn && pte.n) begin
-                // Svnapot: Check if the leaf PTE represents a 64KiB NAPOT page
-                is_napot_64k = (pte.ppn[3:0] == 4'b1000) && (ptw_lvl_q[0] == 2);
-                // Svnapot: Any other encoding with the N-bit set is a reserved format and must cause a page fault
-                // Additionally, fault if N is set on a megapage or gigapage
-                if (!is_napot_64k) begin
-                  state_d = PROPAGATE_ERROR;
-                end
-              end
-
               if (CVA6Cfg.RVH) begin
                 case (ptw_stage_q)
                   S_STAGE: begin
@@ -572,7 +547,6 @@ module cva6_ptw
                         pte.ppn, vaddr_lvl[HYP_EXT*2][ptw_lvl_q[0]], (CVA6Cfg.PtLevels)'(0)
                       };
                     end
-                    default: ;
                   endcase
                 end else ptw_pptr_n = {pte.ppn, vaddr_lvl[0][ptw_lvl_q[0]], (CVA6Cfg.PtLevels)'(0)};
 
@@ -638,10 +612,9 @@ module cva6_ptw
       // 1. in the PTE Lookup check whether we still need to wait for an rvalid
       // 2. waiting for a grant, if so: wait for it
       // if not, go back to idle
-      if ((state_q inside {PTE_LOOKUP, WAIT_RVALID}) && !data_rvalid_q) state_d = WAIT_RVALID;
-      else if (state_q != WAIT_GRANT) state_d = LATENCY;
-
-      kill_req_n = (state_q == WAIT_GRANT);
+      if (((state_q inside {PTE_LOOKUP, WAIT_RVALID}) && !data_rvalid_q) || ((state_q == WAIT_GRANT) && req_port_i.data_gnt))
+        state_d = WAIT_RVALID;
+      else state_d = LATENCY;
     end
   end
 
@@ -652,9 +625,9 @@ module cva6_ptw
       is_instr_ptw_q    <= 1'b0;
       ptw_lvl_q         <= '0;
       tag_valid_q       <= 1'b0;
-      kill_req_q        <= 1'b0;
       tlb_update_asid_q <= '0;
       vaddr_q           <= '0;
+      hartid_q          <= '0;
       ptw_pptr_q        <= '0;
       global_mapping_q  <= 1'b0;
       data_rdata_q      <= '0;
@@ -672,9 +645,9 @@ module cva6_ptw
       is_instr_ptw_q    <= is_instr_ptw_n;
       ptw_lvl_q         <= ptw_lvl_n;
       tag_valid_q       <= tag_valid_n;
-      kill_req_q        <= kill_req_n;
       tlb_update_asid_q <= tlb_update_asid_n;
       vaddr_q           <= vaddr_n;
+      hartid_q          <= hartid_n;
       global_mapping_q  <= global_mapping_n;
       data_rdata_q      <= req_port_i.data_rdata;
       data_rvalid_q     <= req_port_i.data_rvalid;
