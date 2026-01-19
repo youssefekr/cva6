@@ -24,19 +24,19 @@ module controller
     // Asynchronous reset active low - SUBSYSTEM
     input logic rst_ni,
     // Virtualization mode - CSR_REGFILE
-    input logic v_i,
+    input logic [CVA6Cfg.NrHarts-1:0] v_i,
     // Set PC om PC Gen - FRONTEND
-    output logic set_pc_commit_o,
+    output logic [CVA6Cfg.NrHarts-1:0] set_pc_commit_o,
     // Flush the IF stage - FRONTEND
-    output logic flush_if_o,
+    output logic [CVA6Cfg.NrHarts-1:0] flush_if_o,
     // Flush un-issued instructions of the scoreboard - FRONTEND
-    output logic flush_unissued_instr_o,
+    output logic [CVA6Cfg.NrHarts-1:0] flush_unissued_instr_o,
     // Flush ID stage - ID_STAGE
-    output logic flush_id_o,
+    output logic [CVA6Cfg.NrHarts-1:0] flush_id_o,
     // Flush EX stage - EX_STAGE
-    output logic flush_ex_o,
+    output logic [CVA6Cfg.NrHarts-1:0] flush_ex_o,
     // Flush branch predictors - FRONTEND
-    output logic flush_bp_o,
+    output logic [CVA6Cfg.NrHarts-1:0] flush_bp_o,
     // Flush ICache - CACHE
     output logic flush_icache_o,
     // Flush DCache - CACHE
@@ -44,29 +44,29 @@ module controller
     // Acknowledge the whole DCache Flush - CACHE
     input logic flush_dcache_ack_i,
     // Flush TLBs - EX_STAGE
-    output logic flush_tlb_o,
+    output logic [CVA6Cfg.NrHarts-1:0]  flush_tlb_o,
     // TO_BE_COMPLETED - TO_BE_COMPLETED
-    output logic flush_tlb_vvma_o,
+    output logic [CVA6Cfg.NrHarts-1:0]  flush_tlb_vvma_o,
     // TO_BE_COMPLETED - TO_BE_COMPLETED
-    output logic flush_tlb_gvma_o,
+    output logic [CVA6Cfg.NrHarts-1:0] flush_tlb_gvma_o,
     // Halt request from CSR (WFI instruction) - CSR_REGFILE
-    input logic halt_csr_i,
+    input logic [CVA6Cfg.NrHarts-1:0] halt_csr_i,
     // Halt request from accelerator dispatcher - ACC_DISPATCHER
     input logic halt_acc_i,
     // Halt frontend during fence.i to prevent fetching stale instructions
     output logic halt_frontend_o,
     // Halt signal to commit stage - COMMIT_STAGE
-    output logic halt_o,
+    output logic [CVA6Cfg.NrHarts-1:0] halt_o,
     // Return from exception - CSR_REGFILE
-    input logic eret_i,
+    input logic [CVA6Cfg.NrHarts-1:0] eret_i,
     // We got an exception, flush the pipeline - FRONTEND
-    input logic ex_valid_i,
+    input logic [CVA6Cfg.NrHarts-1:0] ex_valid_i,
     // set the debug pc from CSR - FRONTEND
-    input logic set_debug_pc_i,
+    input logic [CVA6Cfg.NrHarts-1:0] set_debug_pc_i,
     // We got a resolved branch, check if we need to flush the front-end - EX_STAGE
     input bp_resolve_t resolved_branch_i,
     // We got an instruction which altered the CSR, flush the pipeline - CSR_REGFILE
-    input logic flush_csr_i,
+    input logic [CVA6Cfg.NrHarts-1:0] flush_csr_i,
     // fence.i in - ACC_DISPATCH
     input logic fence_i_i,
     // fence in - ACC_DISPATCH
@@ -77,6 +77,8 @@ module controller
     input logic hfence_vvma_i,
     // TO_BE_COMPLETED - TO_BE_COMPLETED
     input logic hfence_gvma_i,
+    // hart id - COMMIT_STAGE
+    input logic [CVA6Cfg.LOG2_HARTS-1:0] hartid_i,
     // Flush request from commit stage - COMMIT_STAGE
     input logic flush_commit_i,
     // Flush request from accelerator - ACC_DISPATCHER
@@ -84,7 +86,7 @@ module controller
 );
 
   // active fence - high if we are currently flushing the dcache
-  logic fence_active_d, fence_active_q;
+  logic [CVA6Cfg.NrHarts-1:0] fence_active_d, fence_active_q;
   logic flush_dcache;
   // Added fence_i_active state to track fence.i progress
   logic fence_i_active_d, fence_i_active_q;
@@ -95,16 +97,16 @@ module controller
   always_comb begin : flush_ctrl
     fence_active_d         = fence_active_q;
     fence_i_active_d       = fence_i_active_q;
-    set_pc_commit_o        = 1'b0;
-    flush_if_o             = 1'b0;
-    flush_unissued_instr_o = 1'b0;
-    flush_id_o             = 1'b0;
-    flush_ex_o             = 1'b0;
+    set_pc_commit_o        = '0;
+    flush_if_o             = '0;
+    flush_unissued_instr_o = '0;
+    flush_id_o             = '0;
+    flush_ex_o             = '0;
     flush_dcache           = 1'b0;
     flush_icache_o         = 1'b0;
-    flush_tlb_o            = 1'b0;
-    flush_tlb_vvma_o       = 1'b0;
-    flush_tlb_gvma_o       = 1'b0;
+    flush_tlb_o            = '0;
+    flush_tlb_vvma_o       = '0;
+    flush_tlb_gvma_o       = '0;
     flush_bp_o             = 1'b0;
     // ------------
     // Mis-predict
@@ -112,9 +114,9 @@ module controller
     // flush on mispredict
     if (resolved_branch_i.is_mispredict) begin
       // flush only un-issued instructions
-      flush_unissued_instr_o = 1'b1;
+      flush_unissued_instr_o[resolved_branch_i.hartid] = 1'b1;
       // and if stage
-      flush_if_o             = 1'b1;
+      flush_if_o[resolved_branch_i.hartid]             = 1'b1;
     end
 
     // ---------------------------------
@@ -122,17 +124,16 @@ module controller
     // ---------------------------------
     if (fence_i) begin
       // this can be seen as a CSR instruction with side-effect
-      set_pc_commit_o        = 1'b1;
-      flush_if_o             = 1'b1;
-      flush_unissued_instr_o = 1'b1;
-      flush_id_o             = 1'b1;
-      flush_ex_o             = 1'b1;
+      set_pc_commit_o[hartid_i]        = 1'b1;
+      flush_if_o[hartid_i]             = 1'b1;
+      flush_unissued_instr_o[hartid_i] = 1'b1;
+      flush_id_o[hartid_i]             = 1'b1;
+      flush_ex_o[hartid_i]             = 1'b1;
       // this is not needed in the case since we
       // have a write-through cache in this case
-      // or we are expecting explicit flush/inval via RVZiCbom
       if (CVA6Cfg.DcacheFlushOnFence) begin
         flush_dcache   = 1'b1;
-        fence_active_d = 1'b1;
+        fence_active_d[hartid_i] = 1'b1;
       end
     end
 
@@ -140,34 +141,34 @@ module controller
     // FENCE.I
     // ---------------------------------
     if (fence_i_i) begin
-      set_pc_commit_o        = 1'b1;
-      flush_if_o             = 1'b1;
-      flush_unissued_instr_o = 1'b1;
-      flush_id_o             = 1'b1;
-      flush_ex_o             = 1'b1;
+      set_pc_commit_o[hartid_i]        = 1'b1;
+      flush_if_o[hartid_i]             = 1'b1;
+      flush_unissued_instr_o[hartid_i] = 1'b1;
+      flush_id_o[hartid_i]             = 1'b1;
+      flush_ex_o[hartid_i]             = 1'b1;
       flush_icache_o         = 1'b1;
       // this is not needed in the case since we
       // have a write-through cache in this case
       // When handling fence.i, flush both caches and activate fence_i state
-      if (CVA6Cfg.DcacheFlushOnFenceI) begin
+      if (CVA6Cfg.DcacheFlushOnFence) begin
         flush_dcache = 1'b1;
-        fence_active_d = 1'b1;
+        fence_active_d[hartid_i] = 1'b1;
         fence_i_active_d = 1'b1;
       end
     end
 
     // this is not needed in the case since we
     // have a write-through cache in this case
-    if (CVA6Cfg.DcacheFlushOnFence || CVA6Cfg.DcacheFlushOnFenceI) begin
+    if (CVA6Cfg.DcacheFlushOnFence) begin
       // Wait for the acknowledge here
       // Deassert fence_i state only after DCache flush completes
       if (flush_dcache_ack_i && fence_i_active_q) begin
         fence_i_active_d = 1'b0;
       end
-      if (flush_dcache_ack_i && fence_active_q) begin
-        fence_active_d = 1'b0;
+      if (flush_dcache_ack_i) begin
+        fence_active_d &= ~fence_active_q;
         // keep the flush dcache signal high as long as we didn't get the acknowledge from the cache
-      end else if (fence_active_q) begin
+      end else if (|fence_active_q) begin
         flush_dcache = 1'b1;
       end
     end
@@ -175,77 +176,79 @@ module controller
     // SFENCE.VMA
     // ---------------------------------
     if (CVA6Cfg.RVS && sfence_vma_i) begin
-      set_pc_commit_o        = 1'b1;
-      flush_if_o             = 1'b1;
-      flush_unissued_instr_o = 1'b1;
-      flush_id_o             = 1'b1;
-      flush_ex_o             = 1'b1;
+      set_pc_commit_o[hartid_i]        = 1'b1;
+      flush_if_o[hartid_i]             = 1'b1;
+      flush_unissued_instr_o[hartid_i] = 1'b1;
+      flush_id_o[hartid_i]             = 1'b1;
+      flush_ex_o[hartid_i]             = 1'b1;
 
-      if (CVA6Cfg.RVH && v_i) flush_tlb_vvma_o = 1'b1;
-      else flush_tlb_o = 1'b1;
+      if (CVA6Cfg.RVH && v_i[hartid_i]) flush_tlb_vvma_o[hartid_i] = 1'b1;
+      else flush_tlb_o[hartid_i] = 1'b1;
     end
 
     // ---------------------------------
     // HFENCE.VVMA
     // ---------------------------------
     if (CVA6Cfg.RVH && hfence_vvma_i) begin
-      set_pc_commit_o        = 1'b1;
-      flush_if_o             = 1'b1;
-      flush_unissued_instr_o = 1'b1;
-      flush_id_o             = 1'b1;
-      flush_ex_o             = 1'b1;
+      set_pc_commit_o[hartid_i]        = 1'b1;
+      flush_if_o[hartid_i]             = 1'b1;
+      flush_unissued_instr_o[hartid_i] = 1'b1;
+      flush_id_o[hartid_i]             = 1'b1;
+      flush_ex_o[hartid_i]             = 1'b1;
 
-      flush_tlb_vvma_o       = 1'b1;
+      flush_tlb_vvma_o[hartid_i]       = 1'b1;
     end
 
     // ---------------------------------
     // HFENCE.GVMA
     // ---------------------------------
     if (CVA6Cfg.RVH && hfence_gvma_i) begin
-      set_pc_commit_o        = 1'b1;
-      flush_if_o             = 1'b1;
-      flush_unissued_instr_o = 1'b1;
-      flush_id_o             = 1'b1;
-      flush_ex_o             = 1'b1;
+      set_pc_commit_o[hartid_i]        = 1'b1;
+      flush_if_o[hartid_i]             = 1'b1;
+      flush_unissued_instr_o[hartid_i] = 1'b1;
+      flush_id_o[hartid_i]             = 1'b1;
+      flush_ex_o[hartid_i]             = 1'b1;
 
-      flush_tlb_gvma_o       = 1'b1;
+      flush_tlb_gvma_o[hartid_i]       = 1'b1;
     end
 
     // ---------------------------------
     // CSR side effects and accelerate port
     // ---------------------------------
     // Set PC to commit stage and flush pipeline
-    if (flush_csr_i || flush_acc_i) begin
-      set_pc_commit_o        = 1'b1;
-      flush_if_o             = 1'b1;
-      flush_unissued_instr_o = 1'b1;
-      flush_id_o             = 1'b1;
-      flush_ex_o             = 1'b1;
-    end else if (CVA6Cfg.RVA && flush_commit_i) begin
-      set_pc_commit_o        = 1'b1;
-      flush_if_o             = 1'b1;
-      flush_unissued_instr_o = 1'b1;
-      flush_id_o             = 1'b1;
-      flush_ex_o             = 1'b1;
+    if (flush_csr_i[hartid_i] || flush_acc_i) begin // only one csr can send flush every cycle, maybe this multilexer not needed?
+      set_pc_commit_o[hartid_i]        = 1'b1;
+      flush_if_o[hartid_i]             = 1'b1;
+      flush_unissued_instr_o[hartid_i] = 1'b1;
+      flush_id_o[hartid_i]             = 1'b1;
+      flush_ex_o[hartid_i]             = 1'b1;
+    end else if ((CVA6Cfg.RVA || CVA6Cfg.MultihartEn) && flush_commit_i) begin
+      set_pc_commit_o[hartid_i]        = 1'b1;
+      flush_if_o[hartid_i]             = 1'b1;
+      flush_unissued_instr_o[hartid_i] = 1'b1;
+      flush_id_o[hartid_i]             = 1'b1;
+      flush_ex_o[hartid_i]             = 1'b1;
     end
 
     // ---------------------------------
     // 1. Exception
     // 2. Return from exception
     // ---------------------------------
-    if (ex_valid_i || eret_i || (CVA6Cfg.DebugEn && set_debug_pc_i)) begin
-      // don't flush pcgen as we want to take the exception: Flush PCGen is not a flush signal
-      // for the PC Gen stage but instead tells it to take the PC we gave it
-      set_pc_commit_o        = 1'b0;
-      flush_if_o             = 1'b1;
-      flush_unissued_instr_o = 1'b1;
-      flush_id_o             = 1'b1;
-      flush_ex_o             = 1'b1;
-      // this potentially reduces performance, but is needed
-      // to suppress speculative fetches to virtual memory from
-      // machine mode. TODO: remove when PMA checkers have been
-      // added to the system
-      flush_bp_o             = 1'b1;
+    for (int i = 0; i < CVA6Cfg.NrHarts; i++) begin
+      if (ex_valid_i[i] || eret_i[i] || (CVA6Cfg.DebugEn && set_debug_pc_i[i])) begin
+        // don't flush pcgen as we want to take the exception: Flush PCGen is not a flush signal
+        // for the PC Gen stage but instead tells it to take the PC we gave it
+        set_pc_commit_o[i]        = 1'b0;
+        flush_if_o[i]             = 1'b1;
+        flush_unissued_instr_o[i] = 1'b1;
+        flush_id_o[i]             = 1'b1;
+        flush_ex_o[i]             = 1'b1;
+        // this potentially reduces performance, but is needed
+        // to suppress speculative fetches to virtual memory from
+        // machine mode. TODO: remove when PMA checkers have been
+        // added to the system
+        flush_bp_o[i]             = 1'b1;
+      end
     end
   end
 
@@ -254,7 +257,7 @@ module controller
   // ----------------------
   always_comb begin
     // halt the core if the fence is active
-    halt_o = halt_csr_i || halt_acc_i || ((CVA6Cfg.DcacheFlushOnFence || CVA6Cfg.DcacheFlushOnFenceI) && fence_active_q);
+    halt_o = halt_csr_i | halt_acc_i | (!CVA6Cfg.MultihartEn && CVA6Cfg.DcacheFlushOnFence && fence_active_q);
     // Halt frontend during fence.i to synchronize ICache/DCache flushes
     halt_frontend_o = fence_i_active_q;
   end
