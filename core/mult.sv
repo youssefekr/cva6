@@ -11,7 +11,7 @@ module mult
     // Asynchronous reset active low - SUBSYSTEM
     input  logic                                 rst_ni,
     // Flush - CONTROLLER
-    input  logic                                 flush_i,
+    input  logic [CVA6Cfg.NrHarts-1:0]           flush_i,
     // FU data needed to execute instruction - ISSUE_STAGE
     input  fu_data_t                             fu_data_i,
     // Mult instruction is valid - ISSUE_STAGE
@@ -29,6 +29,7 @@ module mult
   logic div_valid;
   logic div_ready_i;  // receiver of division result is able to accept the result
   logic [CVA6Cfg.TRANS_ID_BITS-1:0] mul_trans_id;
+  logic [CVA6Cfg.LOG2_HARTS-1:0] mul_hartid;
   logic [CVA6Cfg.TRANS_ID_BITS-1:0] div_trans_id;
   logic [CVA6Cfg.XLEN-1:0] mul_result;
   logic [CVA6Cfg.XLEN-1:0] div_result;
@@ -37,9 +38,9 @@ module mult
   logic mul_valid_op;
   // Input Arbitration
 
-  assign mul_valid_op = ~flush_i && mult_valid_i && (fu_data_i.operation inside { MUL, MULH, MULHU, MULHSU, MULW, CLMUL, CLMULH, CLMULR });
+  assign mul_valid_op = ~flush_i[mul_hartid] && mult_valid_i && (fu_data_i.operation inside { MUL, MULH, MULHU, MULHSU, MULW, CLMUL, CLMULH, CLMULR });
 
-  assign div_valid_op = ~flush_i && mult_valid_i && (fu_data_i.operation inside { DIV, DIVU, DIVW, DIVUW, REM, REMU, REMW, REMUW });
+  assign div_valid_op = ~flush_i[fu_data_i.hartid] && mult_valid_i && (fu_data_i.operation inside { DIV, DIVU, DIVW, DIVUW, REM, REMU, REMW, REMUW });
 
   // ---------------------
   // Output Arbitration
@@ -61,13 +62,15 @@ module mult
       .clk_i,
       .rst_ni,
       .trans_id_i     (fu_data_i.trans_id),
+      .hartid_i       (fu_data_i.hartid),
       .operation_i    (fu_data_i.operation),
       .operand_a_i    (fu_data_i.operand_a),
       .operand_b_i    (fu_data_i.operand_b),
       .result_o       (mul_result),
       .mult_valid_i   (mul_valid_op),
       .mult_valid_o   (mul_valid),
-      .mult_trans_id_o(mul_trans_id)
+      .mult_trans_id_o(mul_trans_id),
+      .mult_hartid_o  (mul_hartid)
   );
 
   // ---------------------
@@ -129,6 +132,7 @@ module mult
       .clk_i    (clk_i),
       .rst_ni   (rst_ni),
       .id_i     (fu_data_i.trans_id),
+      .hartid_i (fu_data_i.hartid),
       .op_a_i   (operand_a),
       .op_b_i   (operand_b),
       .opcode_i ({rem, div_signed}),   // 00: udiv, 10: urem, 01: div, 11: rem
