@@ -31,8 +31,7 @@ module ex_stage
     parameter type lsu_ctrl_t = logic,
     parameter type x_result_t = logic,
     parameter type acc_mmu_req_t = logic,
-    parameter type acc_mmu_resp_t = logic,
-    parameter type cbo_t = logic
+    parameter type acc_mmu_resp_t = logic
 ) (
     // Subsystem Clock - SUBSYSTEM
     input logic clk_i,
@@ -128,10 +127,10 @@ module ex_stage
     input logic [1:0] fpu_fmt_i,
     // FPU rm - ISSUE_STAGE
     input logic [2:0] fpu_rm_i,
-    // FPU frm - ISSUE_STAGE
-    input logic [2:0] fpu_frm_i,
+    // FPU frm - CSR_REGFILE
+    input logic [CVA6Cfg.NrHarts-1:0][2:0] fpu_frm_i,
     // FPU precision control - CSR_REGFILE
-    input logic [6:0] fpu_prec_i,
+    input logic [CVA6Cfg.NrHarts-1:0][6:0] fpu_prec_i,
     // FPU transaction ID - ISSUE_STAGE
     output logic [CVA6Cfg.TRANS_ID_BITS-1:0] fpu_trans_id_o,
     // FPU result - ISSUE_STAGE
@@ -140,8 +139,6 @@ module ex_stage
     output logic fpu_valid_o,
     // FPU exception - ISSUE_STAGE
     output exception_t fpu_exception_o,
-    // FPU early valid - ISSUE_STAGE
-    output logic fpu_early_valid_o,
     // ALU2 instruction is valid - ISSUE_STAGE
     input logic [CVA6Cfg.NrIssuePorts-1:0] alu2_valid_i,
     // CVXIF instruction is valid - ISSUE_STAGE
@@ -174,47 +171,47 @@ module ex_stage
     input acc_mmu_req_t acc_mmu_req_i,
     output acc_mmu_resp_t acc_mmu_resp_o,
     // Enable virtual memory translation - CSR_REGFILE
-    input logic enable_translation_i,
+    input logic [CVA6Cfg.NrHarts-1:0] enable_translation_i,
     // Enable G-Stage memory translation - CSR_REGFILE
-    input logic enable_g_translation_i,
+    input logic [CVA6Cfg.NrHarts-1:0] enable_g_translation_i,
     // Enable virtual memory translation for load/stores - CSR_REGFILE
-    input logic en_ld_st_translation_i,
+    input logic [CVA6Cfg.NrHarts-1:0] en_ld_st_translation_i,
     // Enable G-Stage memory translation for load/stores - CSR_REGFILE
-    input logic en_ld_st_g_translation_i,
+    input logic [CVA6Cfg.NrHarts-1:0] en_ld_st_g_translation_i,
     // Flush TLB - CONTROLLER
-    input logic flush_tlb_i,
-    input logic flush_tlb_vvma_i,
-    input logic flush_tlb_gvma_i,
+    input logic [CVA6Cfg.NrHarts-1:0] flush_tlb_i,
+    input logic [CVA6Cfg.NrHarts-1:0] flush_tlb_vvma_i,
+    input logic [CVA6Cfg.NrHarts-1:0] flush_tlb_gvma_i,
     // Privilege mode - CSR_REGFILE
-    input riscv::priv_lvl_t priv_lvl_i,
+    input riscv::priv_lvl_t [CVA6Cfg.NrHarts-1:0] priv_lvl_i,
     // Virtualization mode - CSR_REGFILE
-    input logic v_i,
+    input logic [CVA6Cfg.NrHarts-1:0] v_i,
     // Privilege level at which load and stores should happen - CSR_REGFILE
-    input riscv::priv_lvl_t ld_st_priv_lvl_i,
+    input riscv::priv_lvl_t [CVA6Cfg.NrHarts-1:0] ld_st_priv_lvl_i,
     // Virtualization mode at which load and stores should happen - CSR_REGFILE
-    input logic ld_st_v_i,
+    input logic [CVA6Cfg.NrHarts-1:0] ld_st_v_i,
     // Instruction is hypervisor load/store - CSR_REGFILE
-    output logic csr_hs_ld_st_inst_o,
+    output logic [CVA6Cfg.NrHarts-1:0] csr_hs_ld_st_inst_o,
     // Supervisor user memory - CSR_REGFILE
-    input logic sum_i,
+    input logic [CVA6Cfg.NrHarts-1:0] sum_i,
     // Virtual Supervisor user memory - CSR_REGFILE
-    input logic vs_sum_i,
+    input logic [CVA6Cfg.NrHarts-1:0] vs_sum_i,
     // Make executable readable - CSR_REGFILE
-    input logic mxr_i,
+    input logic [CVA6Cfg.NrHarts-1:0] mxr_i,
     // Make executable readable Virtual Supervisor - CSR_REGFILE
-    input logic vmxr_i,
+    input logic [CVA6Cfg.NrHarts-1:0] vmxr_i,
     // TO_BE_COMPLETED - CSR_REGFILE
-    input logic [CVA6Cfg.PPNW-1:0] satp_ppn_i,
+    input logic [CVA6Cfg.NrHarts-1:0][CVA6Cfg.PPNW-1:0] satp_ppn_i,
     // TO_BE_COMPLETED - CSR_REGFILE
-    input logic [CVA6Cfg.ASID_WIDTH-1:0] asid_i,
+    input logic [CVA6Cfg.NrHarts-1:0][CVA6Cfg.ASID_WIDTH-1:0] asid_i,
     // TO_BE_COMPLETED - CSR_REGFILE
-    input logic [CVA6Cfg.PPNW-1:0] vsatp_ppn_i,
+    input logic [CVA6Cfg.NrHarts-1:0][CVA6Cfg.PPNW-1:0] vsatp_ppn_i,
     // TO_BE_COMPLETED - CSR_REGFILE
-    input logic [CVA6Cfg.ASID_WIDTH-1:0] vs_asid_i,
+    input logic [CVA6Cfg.NrHarts-1:0][CVA6Cfg.ASID_WIDTH-1:0] vs_asid_i,
     // TO_BE_COMPLETED - CSR_REGFILE
-    input logic [CVA6Cfg.PPNW-1:0] hgatp_ppn_i,
+    input logic [CVA6Cfg.NrHarts-1:0][CVA6Cfg.PPNW-1:0] hgatp_ppn_i,
     // TO_BE_COMPLETED - CSR_REGFILE
-    input logic [CVA6Cfg.VMID_WIDTH-1:0] vmid_i,
+    input logic [CVA6Cfg.NrHarts-1:0][CVA6Cfg.VMID_WIDTH-1:0] vmid_i,
     // icache translation response - CACHE
     input icache_arsp_t icache_areq_i,
     // icache translation request - CACHE
@@ -232,13 +229,13 @@ module ex_stage
     // AMO response - CACHE
     input amo_resp_t amo_resp_i,
     // To count the instruction TLB misses - PERF_COUNTERS
-    output logic itlb_miss_o,
+    output logic [CVA6Cfg.NrHarts-1:0] itlb_miss_o,
     // To count the data TLB misses - PERF_COUNTERS
-    output logic dtlb_miss_o,
+    output logic [CVA6Cfg.NrHarts-1:0] dtlb_miss_o,
     // Report the PMP configuration - CSR_REGFILE
-    input riscv::pmpcfg_t [avoid_neg(CVA6Cfg.NrPMPEntries-1):0] pmpcfg_i,
+    input riscv::pmpcfg_t [CVA6Cfg.NrHarts-1:0][avoid_neg(CVA6Cfg.NrPMPEntries-1):0] pmpcfg_i,
     // Report the PMP addresses - CSR_REGFILE
-    input logic [avoid_neg(CVA6Cfg.NrPMPEntries-1):0][CVA6Cfg.PLEN-3:0] pmpaddr_i,
+    input logic [CVA6Cfg.NrHarts-1:0][avoid_neg(CVA6Cfg.NrPMPEntries-1):0][CVA6Cfg.PLEN-3:0] pmpaddr_i,
     // Information dedicated to RVFI - RVFI
     output lsu_ctrl_t rvfi_lsu_ctrl_o,
     // Information dedicated to RVFI - RVFI
@@ -347,7 +344,7 @@ module ex_stage
   ) branch_unit_i (
       .clk_i,
       .rst_ni,
-      .v_i,
+      .v_i (v_i[one_cycle_data.hartid]),
       .debug_mode_i,
       .fu_data_i         (one_cycle_data),
       .pc_i,
@@ -463,21 +460,19 @@ module ex_stage
           .fu_data_i(fpu_data),
           .fpu_fmt_i,
           .fpu_rm_i,
-          .fpu_frm_i,
-          .fpu_prec_i,
+          .fpu_frm_i (fpu_frm_i[fpu_data.hartid]),
+          .fpu_prec_i (fpu_prec_i[fpu_data.hartid]),
           .fpu_trans_id_o(fpu_trans_id),
           .result_o(fpu_result),
           .fpu_valid_o(fpu_valid),
-          .fpu_exception_o,
-          .fpu_early_valid_o
+          .fpu_exception_o
       );
     end else begin : no_fpu_gen
-      assign fpu_ready_o       = '0;
-      assign fpu_trans_id      = '0;
-      assign fpu_result        = '0;
-      assign fpu_valid         = '0;
-      assign fpu_exception_o   = '0;
-      assign fpu_early_valid_o = '0;
+      assign fpu_ready_o     = '0;
+      assign fpu_trans_id    = '0;
+      assign fpu_result      = '0;
+      assign fpu_valid       = '0;
+      assign fpu_exception_o = '0;
     end
   endgenerate
 
@@ -533,7 +528,6 @@ module ex_stage
       .icache_dreq_t(icache_dreq_t),
       .icache_drsp_t(icache_drsp_t),
       .lsu_ctrl_t(lsu_ctrl_t),
-      .cbo_t(cbo_t),
       .acc_mmu_req_t(acc_mmu_req_t),
       .acc_mmu_resp_t(acc_mmu_resp_t)
   ) lsu_i (
@@ -642,8 +636,6 @@ module ex_stage
     assign x_exception_o    = '0;
     assign x_result_o       = '0;
     assign x_valid_o        = '0;
-    assign x_we_o           = '0;
-    assign x_rd_o           = '0;
   end
 
   if (CVA6Cfg.RVS) begin
@@ -659,9 +651,9 @@ module ex_stage
             current_instruction_is_sfence_vma  <= 1'b0;
             current_instruction_is_hfence_vvma <= 1'b0;
             current_instruction_is_hfence_gvma <= 1'b0;
-          end else if ((fu_data_i[0].operation == SFENCE_VMA && !v_i) && |csr_valid_i) begin
+          end else if((fu_data_i[0].operation == SFENCE_VMA && !v_i[fu_data_i[0].hartid]) && |csr_valid_i) begin
             current_instruction_is_sfence_vma <= 1'b1;
-          end else if (((fu_data_i[0].operation == SFENCE_VMA && v_i) || fu_data_i[0].operation == HFENCE_VVMA) && |csr_valid_i) begin
+          end else if (((fu_data_i[0].operation == SFENCE_VMA && v_i[fu_data_i[0].hartid]) || fu_data_i[0].operation == HFENCE_VVMA) && |csr_valid_i) begin
             current_instruction_is_hfence_vvma <= 1'b1;
           end else if ((fu_data_i[0].operation == HFENCE_GVMA) && |csr_valid_i) begin
             current_instruction_is_hfence_gvma <= 1'b1;
