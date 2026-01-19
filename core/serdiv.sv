@@ -28,6 +28,8 @@ module serdiv
     input logic rst_ni,
     // Serdiv translation ID - Mult
     input logic [CVA6Cfg.TRANS_ID_BITS-1:0] id_i,
+    // Hart ID - Mult
+    input logic [CVA6Cfg.LOG2_HARTS-1:0] hartid_i,
     // A operand - Mult
     input logic [WIDTH-1:0] op_a_i,
     // B operand - Mult
@@ -39,7 +41,7 @@ module serdiv
     // Serdiv FU is ready - Mult
     output logic in_rdy_o,
     // Flush - CONTROLLER
-    input logic flush_i,
+    input logic [CVA6Cfg.NrHarts-1:0] flush_i,
     // Serdiv result is valid - Mult
     output logic out_vld_o,
     // Serdiv is ready - Mult
@@ -69,6 +71,8 @@ module serdiv
   logic op_b_neg_one, op_b_neg_one_q, op_b_neg_one_d;
 
   logic [CVA6Cfg.TRANS_ID_BITS-1:0] id_q, id_d;
+
+  logic [CVA6Cfg.LOG2_HARTS-1:0] hartid_q, hartid_d;
 
   logic rem_sel_d, rem_sel_q;
   logic comp_inv_d, comp_inv_q;
@@ -217,7 +221,7 @@ module serdiv
       default: state_d = IDLE;
     endcase
 
-    if (flush_i) begin
+    if (flush_i[hartid_q]) begin
       a_reg_en = 1'b0;
       b_reg_en = 1'b0;
       load_en  = 1'b0;
@@ -238,6 +242,7 @@ module serdiv
 
   // transaction id
   assign id_d = (load_en) ? id_i : id_q;
+  assign hartid_d = (load_en) ? hartid_i : hartid_q;
   assign id_o = id_q;
 
   assign op_a_d = (a_reg_en) ? add_out : op_a_q;
@@ -252,6 +257,7 @@ module serdiv
       res_q          <= '0;
       cnt_q          <= '0;
       id_q           <= '0;
+      hartid_q       <= '0;
       rem_sel_q      <= 1'b0;
       comp_inv_q     <= 1'b0;
       res_inv_q      <= 1'b0;
@@ -265,6 +271,7 @@ module serdiv
       res_q          <= res_d;
       cnt_q          <= cnt_d;
       id_q           <= id_d;
+      hartid_q       <= hartid_d;
       rem_sel_q      <= rem_sel_d;
       comp_inv_q     <= comp_inv_d;
       res_inv_q      <= res_inv_d;
