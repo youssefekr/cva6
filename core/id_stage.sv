@@ -56,56 +56,42 @@ module id_stage #(
     // Information dedicated to RVFI - RVFI
     output logic [CVA6Cfg.NrIssuePorts-1:0] rvfi_is_compressed_o,
     // Current privilege level - CSR_REGFILE
-    input riscv::priv_lvl_t priv_lvl_i,
+    input riscv::priv_lvl_t [CVA6Cfg.NrHarts-1:0] priv_lvl_i,
     // Current virtualization mode - CSR_REGFILE
-    input logic v_i,
+    input logic [CVA6Cfg.NrHarts-1:0] v_i,
     // Floating point extension status - CSR_REGFILE
-    input riscv::xs_t fs_i,
+    input riscv::xs_t [CVA6Cfg.NrHarts-1:0] fs_i,
     // Floating point extension virtual status - CSR_REGFILE
-    input riscv::xs_t vfs_i,
+    input riscv::xs_t [CVA6Cfg.NrHarts-1:0] vfs_i,
     // Floating point dynamic rounding mode - CSR_REGFILE
-    input logic [2:0] frm_i,
+    input logic [CVA6Cfg.NrHarts-1:0][2:0] frm_i,
     // Vector extension status - CSR_REGFILE
-    input riscv::xs_t vs_i,
+    input riscv::xs_t [CVA6Cfg.NrHarts-1:0] vs_i,
     // Level sensitive (async) interrupts - SUBSYSTEM
-    input logic [1:0] irq_i,
+    input logic [CVA6Cfg.NrHarts-1:0][1:0] irq_i,
     // Interrupt control status - CSR_REGFILE
-    input irq_ctrl_t irq_ctrl_i,
+    input irq_ctrl_t [CVA6Cfg.NrHarts-1:0] irq_ctrl_i,
     // Is current mode debug ? - CSR_REGFILE
-    input logic debug_mode_i,
+    input logic [CVA6Cfg.NrHarts-1:0] debug_mode_i,
     // Trap virtual memory - CSR_REGFILE
-    input logic tvm_i,
+    input logic [CVA6Cfg.NrHarts-1:0] tvm_i,
     // Timeout wait - CSR_REGFILE
-    input logic tw_i,
+    input logic [CVA6Cfg.NrHarts-1:0] tw_i,
     // Virtual timeout wait - CSR_REGFILE
-    input logic vtw_i,
+    input logic [CVA6Cfg.NrHarts-1:0] vtw_i,
     // Trap sret - CSR_REGFILE
-    input logic tsr_i,
+    input logic [CVA6Cfg.NrHarts-1:0] tsr_i,
     // Hypervisor user mode - CSR_REGFILE
-    input logic hu_i,
-    // machine-mode cache block invalidate enable - CSR_REGFILE
-    input riscv::cbie_t mcbie_i,
-    // supervisor-mode cache block invalidate enable - CSR_REGFILE
-    input riscv::cbie_t scbie_i,
-    // hypervisor-mode cache block invalidate enable - CSR_REGFILE
-    input riscv::cbie_t hcbie_i,
-    // machine-mode clean/flush cache block invalidate enable - CSR_REGFILE
-    input logic mcbcfe_i,
-    // supervisor-mode clean/flush cache block invalidate enable - CSR_REGFILE
-    input logic scbcfe_i,
-    // hypervisor-mode clean/flush cache block invalidate enable - CSR_REGFILE
-    input logic hcbcfe_i,
+    input logic [CVA6Cfg.NrHarts-1:0] hu_i,
     // CVXIF Compressed interface
     input logic [CVA6Cfg.XLEN-1:0] hart_id_i,
     input logic compressed_ready_i,
     //JVT
-    input jvt_t jvt_i,
+    input jvt_t [CVA6Cfg.NrHarts-1:0] jvt_i,
     input x_compressed_resp_t compressed_resp_i,
     output logic compressed_valid_o,
     output x_compressed_req_t compressed_req_o,
-    // breakpoint request from trigger module
-    input debug_from_trigger_i,
-    // Data cache request ouput - CACHE
+    // Data cache request output - CACHE
     input dcache_req_o_t dcache_req_ports_i,
     // Data cache request input - CACHE
     output dcache_req_i_t dcache_req_ports_o
@@ -232,7 +218,7 @@ module id_stage #(
           .illegal_instr_o(is_illegal_zcmt),
           .is_compressed_o(is_compressed_zcmt),
           .fetch_stall_o  (stall_macro_deco_zcmt),
-          .jvt_i          (jvt_i),
+          .jvt_i          (jvt_i[fetch_entry_i[0].hart_id]),
           .req_port_i     (dcache_req_ports_i),
           .req_port_o     (dcache_req_ports_o),
           .jump_address_o (jump_address)
@@ -325,12 +311,13 @@ module id_stage #(
         .INTERRUPTS(INTERRUPTS)
     ) decoder_i (
         .debug_req_i,
-        .irq_ctrl_i,
-        .irq_i,
+        .irq_ctrl_i (irq_ctrl_i[fetch_entry_i[i].hartid]),
+        .irq_i (irq_i[fetch_entry_i[i].hartid]),
         .pc_i                      (fetch_entry_i[i].address),
         .is_compressed_i           (is_compressed_deco[i]),
         .is_macro_instr_i          (is_macro_instr[i]),
         .is_zcmt_i                 (is_zcmt_instr[i]),
+        .hartid_i                  (fetch_entry_i[i].hartid),
         .is_last_macro_instr_i     (is_last_macro_instr),
         .is_double_rd_macro_instr_i(is_double_rd_macro_instr),
         .jump_address_i            (jump_address),
@@ -339,28 +326,21 @@ module id_stage #(
         .compressed_instr_i        (fetch_entry_i[i].instruction[15:0]),
         .branch_predict_i          (fetch_entry_i[i].branch_predict),
         .ex_i                      (fetch_entry_i[i].ex),
-        .priv_lvl_i                (priv_lvl_i),
-        .v_i                       (v_i),
-        .debug_mode_i              (debug_mode_i),
-        .fs_i,
-        .vfs_i,
-        .frm_i,
-        .vs_i,
-        .tvm_i,
-        .tw_i,
-        .vtw_i,
-        .tsr_i,
-        .hu_i,
-        .mcbie_i,
-        .scbie_i,
-        .hcbie_i,
-        .mcbcfe_i,
-        .scbcfe_i,
-        .hcbcfe_i,
+        .priv_lvl_i                (priv_lvl_i[fetch_entry_i[i].hartid]),
+        .v_i                       (v_i[fetch_entry_i[i].hartid]),
+        .debug_mode_i              (debug_mode_i[fetch_entry_i[i].hartid]),
+        .fs_i                      (fs_i[fetch_entry_i[i].hartid]),
+        .vfs_i                     (vfs_i[fetch_entry_i[i].hartid]),
+        .frm_i                     (frm_i[fetch_entry_i[i].hartid]),
+        .vs_i                      (vs_i[fetch_entry_i[i].hartid]),
+        .tvm_i                     (tvm_i[fetch_entry_i[i].hartid]),
+        .tw_i                      (tw_i[fetch_entry_i[i].hartid]),
+        .vtw_i                     (vtw_i[fetch_entry_i[i].hartid]),
+        .tsr_i                     (tsr_i[fetch_entry_i[i].hartid]),
+        .hu_i                      (hu_i[fetch_entry_i[i].hartid]),
         .instruction_o             (decoded_instruction[i]),
         .orig_instr_o              (orig_instr[i]),
-        .is_control_flow_instr_o   (is_control_flow_instr[i]),
-        .debug_from_trigger_i      (debug_from_trigger_i)
+        .is_control_flow_instr_o   (is_control_flow_instr[i])
     );
   end
 
