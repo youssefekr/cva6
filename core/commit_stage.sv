@@ -25,13 +25,13 @@ module commit_stage
     // Asynchronous reset active low - SUBSYSTEM
     input logic rst_ni,
     // Request to halt the core - CONTROLLER
-    input logic halt_i,
-    // request to flush dcache, also flush the pipeline - CACHE
+    input logic [CVA6Cfg.NrHarts-1:0] halt_i,
+    // request to flush dcache, also flush the pipeline - CONTROLLER
     input logic flush_dcache_i,
-    // TO_BE_COMPLETED - EX_STAGE
-    output exception_t exception_o,
+    // Exception - COMMIT_STAGE
+    output exception_t [CVA6Cfg.NrHarts-1:0] exception_o,
     // Mark the F state as dirty - CSR_REGFILE
-    output logic dirty_fp_state_o,
+    output logic [CVA6Cfg.NrHarts-1:0] dirty_fp_state_o,
     // TO_BE_COMPLETED - CSR_REGFILE
     input logic single_step_i,
     // The instruction we want to commit - ISSUE_STAGE
@@ -47,23 +47,25 @@ module commit_stage
     // Register file write data - ISSUE_STAGE
     output logic [CVA6Cfg.NrCommitPorts-1:0][CVA6Cfg.XLEN-1:0] wdata_o,
     // Register file write enable - ISSUE_STAGE
-    output logic [CVA6Cfg.NrCommitPorts-1:0] we_gpr_o,
+    output logic [CVA6Cfg.NrHarts-1:0][CVA6Cfg.NrCommitPorts-1:0] we_gpr_o,
     // Floating point register enable - ISSUE_STAGE
-    output logic [CVA6Cfg.NrCommitPorts-1:0] we_fpr_o,
+    output logic [CVA6Cfg.NrHarts-1:0][CVA6Cfg.NrCommitPorts-1:0] we_fpr_o,
     // Result of AMO operation - CACHE
     input amo_resp_t amo_resp_i,
     // TO_BE_COMPLETED - FRONTEND_CSR_REGFILE
     output logic [CVA6Cfg.VLEN-1:0] pc_o,
+    // prevoius pc - FRONTEND
+    output logic [CVA6Cfg.NrHarts-1:0][CVA6Cfg.VLEN-1:0] prev_pc_o,
     // Decoded CSR operation - CSR_REGFILE
-    output fu_op csr_op_o,
+    output fu_op [CVA6Cfg.NrHarts-1:0] csr_op_o,
     // Data to write to CSR - CSR_REGFILE
     output logic [CVA6Cfg.XLEN-1:0] csr_wdata_o,
     // Data to read from CSR - CSR_REGFILE
-    input logic [CVA6Cfg.XLEN-1:0] csr_rdata_i,
+    input logic [CVA6Cfg.NrHarts-1:0][CVA6Cfg.XLEN-1:0] csr_rdata_i,
     // Write the fflags CSR - CSR_REGFILE
-    output logic csr_write_fflags_o,
+    output logic [CVA6Cfg.NrHarts-1:0] csr_write_fflags_o,
     // Exception or interrupt occurred in CSR stage (the same as commit) - CSR_REGFILE
-    input exception_t csr_exception_i,
+    input exception_t [CVA6Cfg.NrHarts-1:0] csr_exception_i,
     // Commit the pending store - EX_STAGE
     output logic commit_lsu_o,
     // Commit buffer of LSU is ready - EX_STAGE
@@ -87,9 +89,7 @@ module commit_stage
     // TO_BE_COMPLETED - CONTROLLER
     output logic hfence_vvma_o,
     // TO_BE_COMPLETED - CONTROLLER
-    output logic hfence_gvma_o,
-    // Breakpoint exception from trigger module
-    input logic break_from_trigger_i
+    output logic hfence_gvma_o
 );
 
   // ila_0 i_ila_commit (
@@ -111,11 +111,14 @@ module commit_stage
   end
 
   assign pc_o = commit_instr_i[0].pc;
+  always_ff @(posedge clk_i) begin
+    if (commit_instr_i[0].valid) prev_pc_o[commit_instr_i[0].hartid] <= commit_instr_i[0].pc;
+  end
   // Dirty the FP state if we are committing anything related to the FPU
   always_comb begin : dirty_fp_state
-    dirty_fp_state_o = 1'b0;
+    dirty_fp_state_o = '0;
     for (int i = 0; i < CVA6Cfg.NrCommitPorts; i++) begin
-      dirty_fp_state_o |= commit_ack_o[i] & ((commit_instr_i[i].fu inside {FPU, FPU_VEC} & CVA6Cfg.FpPresent & ariane_pkg::fd_changes_rd_state(
+      dirty_fp_state_o[commit_instr_i[i].hartid] |= commit_ack_o[i] & ((commit_instr_i[i].fu inside {FPU, FPU_VEC} & CVA6Cfg.FpPresent & ariane_pkg::fd_changes_rd_state(
           commit_instr_i[i].op
       )) || (CVA6Cfg.FpPresent && ariane_pkg::is_rd_fpr(
           commit_instr_i[i].op
@@ -140,26 +143,29 @@ module commit_stage
 
     amo_valid_commit_o = 1'b0;
 
-    we_gpr_o[0] = 1'b0;
+    if (CVA6Cfg.MultihartEn) we_gpr_o = '0;
+    else we_gpr_o[0][0] = 1'b0;
     we_fpr_o = '{default: 1'b0};
     commit_lsu_o = 1'b0;
     commit_csr_o = 1'b0;
     // amos will commit on port 0
     wdata_o[0] = (CVA6Cfg.RVA && amo_resp_i.ack) ? amo_resp_i.result[CVA6Cfg.XLEN-1:0] : commit_instr_i[0].result;
-    csr_op_o = ADD;  // this corresponds to a CSR NOP
+    csr_op_o = {CVA6Cfg.NrHarts{ADD}};  // this corresponds to a CSR NOP
     csr_wdata_o = {CVA6Cfg.XLEN{1'b0}};
     fence_i_o = 1'b0;
     fence_o = 1'b0;
     sfence_vma_o = 1'b0;
     hfence_vvma_o = 1'b0;
     hfence_gvma_o = 1'b0;
-    csr_write_fflags_o = 1'b0;
+    csr_write_fflags_o = '0;
     flush_commit_o = 1'b0;
 
     // we do not commit the instruction yet if we requested a halt
-    if (commit_instr_i[0].valid && !halt_i) begin
+    if (commit_instr_i[0].valid && !(halt_i && !CVA6Cfg.MultihartEn)) begin
+      //if wfi flush
+      //flush_commit_o = CVA6Cfg.MultihartEn && commit_instr_i[0].op == ariane_pkg::WFI;
       // we will not commit the instruction if we took an exception
-      if (commit_instr_i[0].ex.valid || break_from_trigger_i) begin
+      if (commit_instr_i[0].ex.valid) begin
         // However we can drop it (with its exception)
         if (commit_drop_i[0]) begin
           commit_ack_o[0] = 1'b1;
@@ -175,9 +181,9 @@ module commit_stage
           // we can definitely write the register file
           // if the instruction is not committing anything the destination
           if (CVA6Cfg.FpPresent && ariane_pkg::is_rd_fpr(commit_instr_i[0].op)) begin
-            we_fpr_o[0] = 1'b1;
+            we_fpr_o[commit_instr_i[0].hartid][0] = 1'b1;
           end else begin
-            we_gpr_o[0] = 1'b1;
+            we_gpr_o[commit_instr_i[0].hartid][0] = 1'b1;
           end
         end
 
@@ -199,7 +205,7 @@ module commit_stage
             if (!commit_drop_i[0]) begin
               // write the CSR with potential exception flags from retiring floating point instruction
               csr_wdata_o = {{CVA6Cfg.XLEN - 5{1'b0}}, commit_instr_i[0].ex.cause[4:0]};
-              csr_write_fflags_o = 1'b1;
+              csr_write_fflags_o[commit_instr_i[0].hartid] = 1'b1;
             end
           end
         end
@@ -210,15 +216,15 @@ module commit_stage
         // throw an exception
         if (commit_instr_i[0].fu == CSR) begin
           // write the CSR file
-          csr_op_o    = commit_instr_i[0].op;
+          csr_op_o[commit_instr_i[0].hartid]    = commit_instr_i[0].op;
           csr_wdata_o = commit_instr_i[0].result;
           if (!commit_drop_i[0]) begin
-            if (!csr_exception_i.valid) begin
+            if (!csr_exception_i[commit_instr_i[0].hartid].valid) begin
               commit_csr_o = 1'b1;
-              wdata_o[0]   = csr_rdata_i;
+              wdata_o[0]   = csr_rdata_i[commit_instr_i[0].hartid];
             end else begin
               commit_ack_o[0] = 1'b0;
-              we_gpr_o[0] = 1'b0;
+              we_gpr_o[commit_instr_i[0].hartid][0] = 1'b0;
             end
           end
         end
@@ -235,6 +241,7 @@ module commit_stage
             // wait for the store buffer to drain until flushing the pipeline
             commit_ack_o[0] = no_st_pending_i;
           end
+          commit_csr_o = 1'b0;
         end
         // ------------------
         // HFENCE.VVMA Logic
@@ -249,6 +256,7 @@ module commit_stage
             // wait for the store buffer to drain until flushing the pipeline
             commit_ack_o[0] = no_st_pending_i;
           end
+          commit_csr_o = 1'b0;
         end
         // ------------------
         // HFENCE.GVMA Logic
@@ -263,6 +271,7 @@ module commit_stage
             // wait for the store buffer to drain until flushing the pipeline
             commit_ack_o[0] = no_st_pending_i;
           end
+          commit_csr_o = 1'b0;
         end
         // ------------------
         // FENCE.I Logic
@@ -277,6 +286,7 @@ module commit_stage
             // tell the controller to flush the I$
             fence_i_o = no_st_pending_i;
           end
+          commit_csr_o = 1'b0;
         end
         // ------------------
         // FENCE Logic
@@ -289,6 +299,7 @@ module commit_stage
             // tell the controller to flush the D$
             fence_o = no_st_pending_i;
           end
+          commit_csr_o = 1'b0;
         end
         // ------------------
         // AMO
@@ -299,7 +310,7 @@ module commit_stage
           // flush the pipeline
           flush_commit_o = amo_resp_i.ack;
           amo_valid_commit_o = 1'b1;
-          we_gpr_o[0] = amo_resp_i.ack;
+          we_gpr_o[commit_instr_i[0].hartid][0] = amo_resp_i.ack;
         end
       end
     end
@@ -307,7 +318,7 @@ module commit_stage
     if (CVA6Cfg.NrCommitPorts > 1) begin
       commit_macro_ack[1] = 1'b0;
       commit_ack_o[1]     = 1'b0;
-      we_gpr_o[1]         = 1'b0;
+      we_gpr_o[0][1]         = 1'b0;
       wdata_o[1]          = commit_instr_i[1].result;
 
       // -----------------
@@ -333,8 +344,8 @@ module commit_stage
 
           if (!commit_drop_i[1]) begin
             if (CVA6Cfg.FpPresent && ariane_pkg::is_rd_fpr(commit_instr_i[1].op))
-              we_fpr_o[1] = 1'b1;
-            else we_gpr_o[1] = 1'b1;
+              we_fpr_o[0][1] = 1'b1;
+            else we_gpr_o[0][1] = 1'b1;
 
             // additionally check if we are retiring an FPU instruction because we need to make sure that we write all
             // exception flags
@@ -368,28 +379,23 @@ module commit_stage
     // Multiple simultaneous interrupts and traps at the same privilege level are handled in the following decreasing
     // priority order: external interrupts, software interrupts, timer interrupts, then finally any synchronous traps. (1.10 p.30)
     // interrupts are correctly prioritized in the CSR reg file, exceptions are prioritized here
-    exception_o.valid = 1'b0;
-    exception_o.cause = '0;
-    exception_o.tval  = '0;
-    exception_o.tval2 = '0;
-    exception_o.tinst = '0;
-    exception_o.gva   = 1'b0;
+    exception_o = '0;
 
     // we need a valid instruction in the commit stage
     if (commit_instr_i[0].valid && !commit_drop_i[0]) begin
       // ------------------------
       // check for CSR exception
       // ------------------------
-      if (csr_exception_i.valid) begin
-        exception_o      = csr_exception_i;
+      if (csr_exception_i[commit_instr_i[0].hartid].valid) begin
+        exception_o[commit_instr_i[0].hartid]      = csr_exception_i[commit_instr_i[0].hartid];
         // if no earlier exception happened the commit instruction will still contain
         // the instruction bits from the ID stage. If a earlier exception happened we don't care
         // as we will overwrite it anyway in the next IF bl
-        exception_o.tval = commit_instr_i[0].ex.tval;
+        exception_o[commit_instr_i[0].hartid] .tval= commit_instr_i[0].ex.tval;
         if (CVA6Cfg.RVH) begin
-          exception_o.tinst = commit_instr_i[0].ex.tinst;
-          exception_o.tval2 = commit_instr_i[0].ex.tval2;
-          exception_o.gva   = commit_instr_i[0].ex.gva;
+          exception_o[commit_instr_i[0].hartid] .tinst = commit_instr_i[0].ex.tinst;
+          exception_o[commit_instr_i[0].hartid] .tval2 = commit_instr_i[0].ex.tval2;
+          exception_o[commit_instr_i[0].hartid] .gva   = commit_instr_i[0].ex.gva;
         end
       end
       // ------------------------
@@ -398,18 +404,13 @@ module commit_stage
       // but we give precedence to exceptions which happened earlier e.g.: instruction page
       // faults for example
       if (commit_instr_i[0].ex.valid) begin
-        exception_o = commit_instr_i[0].ex;
+        exception_o[commit_instr_i[0].hartid] = commit_instr_i[0].ex;
       end
     end
     // Don't take any exceptions iff:
     // - If we halted the processor
-    if (halt_i) begin
-      exception_o.valid = 1'b0;
-    end
-
-    if (CVA6Cfg.SDTRIG && !CVA6Cfg.DebugEn && break_from_trigger_i) begin
-      exception_o.valid = 1'b1;
-      exception_o.cause = 32'h00000003;
+    if (halt_i && !CVA6Cfg.MultihartEn) begin
+      exception_o[commit_instr_i[0].hartid].valid = 1'b0;
     end
   end
 endmodule
