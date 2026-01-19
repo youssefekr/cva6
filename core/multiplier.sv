@@ -26,6 +26,8 @@ module multiplier
     input  logic                             rst_ni,
     // Multiplier transaction ID - Mult
     input  logic [CVA6Cfg.TRANS_ID_BITS-1:0] trans_id_i,
+    // Multiplier hart ID - Mult
+    input  logic [CVA6Cfg.LOG2_HARTS-1:0] hartid_i,
     // Multiplier instruction is valid - Mult
     input  logic                             mult_valid_i,
     // Multiplier operation - Mult
@@ -39,7 +41,9 @@ module multiplier
     // Mutliplier result is valid - Mult
     output logic                             mult_valid_o,
     // Multiplier transaction ID - Mult
-    output logic [CVA6Cfg.TRANS_ID_BITS-1:0] mult_trans_id_o
+    output logic [CVA6Cfg.TRANS_ID_BITS-1:0] mult_trans_id_o,
+    // Multiplier hart ID - Mult
+    output logic [CVA6Cfg.LOG2_HARTS-1:0] mult_hartid_o  
 );
   // Carry-less multiplication
   logic [CVA6Cfg.XLEN-1:0]
@@ -77,6 +81,7 @@ module multiplier
 
   // Pipeline register
   logic [CVA6Cfg.TRANS_ID_BITS-1:0] trans_id_q;
+  logic [CVA6Cfg.LOG2_HARTS-1:0]    hartid_q;
   logic                             mult_valid_q;
   fu_op operator_d, operator_q;
   logic [CVA6Cfg.XLEN*2-1:0] mult_result_d, mult_result_q;
@@ -88,6 +93,7 @@ module multiplier
   // control signals
   assign mult_valid_o = mult_valid_q;
   assign mult_trans_id_o = trans_id_q;
+  assign mult_hartid_o = hartid_q;
 
   assign mult_valid      = mult_valid_i && (operation_i inside {MUL, MULH, MULHU, MULHSU, MULW, CLMUL, CLMULH, CLMULR});
 
@@ -144,9 +150,6 @@ module multiplier
         clmulr_q <= clmulr_d;
       end
     end
-  end else begin
-    assign clmul_q  = '0;
-    assign clmulr_q = '0;
   end
   // -----------------------
   // Output pipeline register
@@ -155,11 +158,13 @@ module multiplier
     if (~rst_ni) begin
       mult_valid_q  <= '0;
       trans_id_q    <= '0;
+      hartid_q      <= '0;
       operator_q    <= MUL;
       mult_result_q <= '0;
     end else begin
       // Input silencing
       trans_id_q    <= trans_id_i;
+      hartid_q      <= hartid_i;
       // Output Register
       mult_valid_q  <= mult_valid;
       operator_q    <= operator_d;
