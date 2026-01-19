@@ -19,7 +19,7 @@ module amo_buffer #(
 ) (
     input logic clk_i,   // Clock
     input logic rst_ni,  // Asynchronous reset active low
-    input logic flush_i, // pipeline flush
+    input logic [CVA6Cfg.NrHarts-1:0] flush_i, // pipeline flush
 
     input logic valid_i,  // AMO is valid
     output logic ready_o,  // AMO unit is ready
@@ -27,6 +27,7 @@ module amo_buffer #(
     input  logic [CVA6Cfg.PLEN-1:0]      paddr_i,            // physical address of store which needs to be placed in the queue
     input logic [CVA6Cfg.XLEN-1:0] data_i,  // data which is placed in the queue
     input logic [1:0] data_size_i,  // type of request we are making (e.g.: bytes to write)
+    input logic [CVA6Cfg.LOG2_HARTS-1:0] hartid_i,  // hart ID to address the correct AMO buffer in case of multihart
     // D$
     output ariane_pkg::amo_req_t amo_req_o,  // request to cache subsystem
     input ariane_pkg::amo_resp_t amo_resp_i,  // response from cache subsystem
@@ -42,6 +43,7 @@ module amo_buffer #(
     logic [CVA6Cfg.PLEN-1:0] paddr;
     logic [CVA6Cfg.XLEN-1:0] data;
     logic [1:0]              size;
+    logic [CVA6Cfg.LOG2_HARTS-1:0] hartid;
   } amo_op_t;
 
   amo_op_t amo_data_in, amo_data_out;
@@ -57,10 +59,11 @@ module amo_buffer #(
   assign amo_data_in.data = data_i;
   assign amo_data_in.paddr = paddr_i;
   assign amo_data_in.size = data_size_i;
+  assign amo_data_in.hartid = hartid_i;
 
   // only flush if we are currently not committing the AMO
   // e.g.: it is not speculative anymore
-  assign flush_amo_buffer = flush_i & !amo_valid_commit_i;
+  assign flush_amo_buffer = flush_i[amo_data_out.hartid] & !amo_valid_commit_i & !valid_i; // in mt do not flush if next entry is valid
 
   cva6_fifo_v3 #(
       .DEPTH  (1),
