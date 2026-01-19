@@ -59,6 +59,8 @@ module instr_queue
     input logic [CVA6Cfg.INSTR_PER_FETCH-1:0][31:0] instr_i,
     // Instruction address - instr_realign
     input logic [CVA6Cfg.INSTR_PER_FETCH-1:0][CVA6Cfg.VLEN-1:0] addr_i,
+    // Instruction address hart ID - instr_realign
+    input logic [CVA6Cfg.LOG2_HARTS-1:0] hartid_i,
     // Instruction is valid - instr_realign
     input logic [CVA6Cfg.INSTR_PER_FETCH-1:0] valid_i,
     // Handshake’s ready with CACHE - CACHE
@@ -80,6 +82,8 @@ module instr_queue
     output logic replay_o,
     // Address at which to replay the fetch - FRONTEND
     output logic [CVA6Cfg.VLEN-1:0] replay_addr_o,
+    // Hart ID at which to replay the fetch - FRONTEND
+    output logic [CVA6Cfg.LOG2_HARTS-1:0] replay_hartid_o,
     // Handshake’s data with ID_STAGE - ID_STAGE
     output fetch_entry_t [CVA6Cfg.NrIssuePorts-1:0] fetch_entry_o,
     // Handshake’s valid with ID_STAGE - ID_STAGE
@@ -99,6 +103,7 @@ module instr_queue
     logic [CVA6Cfg.GPLEN-1:0]        ex_gpaddr;  // lower GPLEN bits of tval2 for exception
     logic [31:0]                     ex_tinst;   // tinst of exception
     logic                            ex_gva;
+    logic [CVA6Cfg.LOG2_HARTS-1:0]   hartid;     // hart ID
   } instr_data_t;
 
   logic [CVA6Cfg.LOG2_INSTR_PER_FETCH-1:0] branch_index;
@@ -124,9 +129,9 @@ module instr_queue
   // rotated by N
   logic [CVA6Cfg.NrIssuePorts:0][CVA6Cfg.INSTR_PER_FETCH-1:0] idx_ds;
 
-  logic [CVA6Cfg.VLEN-1:0] pc_d, pc_q;  // current PC
+  logic [CVA6Cfg.NrHarts-1:0][CVA6Cfg.VLEN-1:0] pc_d, pc_q;  // current PC
   logic [CVA6Cfg.NrIssuePorts:0][CVA6Cfg.VLEN-1:0] pc_j;
-  logic reset_address_d, reset_address_q;  // we need to re-set the address because of a flush
+  logic [CVA6Cfg.NrHarts-1:0] reset_address_d, reset_address_q;  // we need to re-set the address because of a flush
 
   logic [CVA6Cfg.NrIssuePorts-1:0] fetch_entry_is_cf, fetch_entry_fire;
 
@@ -217,6 +222,7 @@ module instr_queue
       assign instr_data_in[i].cf = cf[CVA6Cfg.INSTR_PER_FETCH+i-idx_is_q];
       assign instr_data_in[i].ex = exception_i;  // exceptions hold for the whole fetch packet
       assign instr_data_in[i].ex_vaddr = exception_addr_i;
+      assign instr_data_in[i].hartid = hartid_i; // hartid hold for the whole fetch packet
       if (CVA6Cfg.RVH) begin : gen_hyp_ex_with_C
         assign instr_data_in[i].ex_gpaddr = exception_gpaddr_i;
         assign instr_data_in[i].ex_tinst = exception_tinst_i;
@@ -293,6 +299,8 @@ module instr_queue
     assign replay_addr_o = addr_i[0];
   end
 
+  assign replay_hartid_o = hartid_i;
+
   // ----------------------
   // Downstream interface
   // ----------------------
@@ -322,6 +330,7 @@ module instr_queue
       // assemble fetch entry
       for (int unsigned i = 0; i < CVA6Cfg.NrIssuePorts; i++) begin
         fetch_entry_o[i].instruction = '0;
+        fetch_entry_o[i].hartid = '0;
         fetch_entry_o[i].address = pc_j[i];
         fetch_entry_o[i].ex.valid = 1'b0;
         fetch_entry_o[i].ex.cause = '0;
@@ -346,6 +355,7 @@ module instr_queue
             fetch_entry_o[0].ex.cause = riscv::INSTR_PAGE_FAULT;
           end
           fetch_entry_o[0].instruction = instr_data_out[i].instr;
+          fetch_entry_o[0].hartid = instr_data_out[i].hartid;
           fetch_entry_o[0].ex.valid = instr_data_out[i].ex != ariane_pkg::FE_NONE;
           if (CVA6Cfg.TvalEn)
             fetch_entry_o[0].ex.tval = {
@@ -390,6 +400,7 @@ module instr_queue
       idx_ds_d = '0;
       idx_is_d = '0;
       fetch_entry_o[0].instruction = instr_data_out[0].instr;
+      fetch_entry_o[0].hartid = instr_data_out[0].hartid;
       fetch_entry_o[0].address = pc_q;
 
       fetch_entry_o[0].ex.valid = instr_data_out[0].ex != ariane_pkg::FE_NONE;
@@ -414,7 +425,7 @@ module instr_queue
       fetch_entry_o[0].branch_predict.predict_address = address_out;
       fetch_entry_o[0].branch_predict.cf = instr_data_out[0].cf;
 
-      pop_instr[0] = fetch_entry_valid_o[0] & fetch_entry_ready_i[0];
+      pop_instr[0] = fetch_entry_fire[0];
     end
   end
 
@@ -428,7 +439,7 @@ module instr_queue
   // ----------------------
   // Calculate (Next) PC
   // ----------------------
-  assign pc_j[0] = pc_q;
+  assign pc_j[0] = pc_q[fetch_entry_o[0].hartid];
   for (genvar i = 0; i < CVA6Cfg.NrIssuePorts; i++) begin
     assign pc_j[i+1] = fetch_entry_is_cf[i] ? address_out : (
       pc_j[i] + ((fetch_entry_o[i].instruction[1:0] != 2'b11) ? 'd2 : 'd4)
@@ -437,10 +448,10 @@ module instr_queue
 
   always_comb begin
     pc_d = pc_q;
-    reset_address_d = flush_i ? 1'b1 : reset_address_q;
+    reset_address_d = flush_i ? '1 : reset_address_q;
 
     if (fetch_entry_fire[0]) begin
-      pc_d = pc_j[1];
+      pc_d[fetch_entry_o[0].hartid] = pc_j[1];
       if (CVA6Cfg.SuperscalarEn) begin
         if (fetch_entry_fire[NID]) begin
           pc_d = pc_j[2];
@@ -449,10 +460,10 @@ module instr_queue
     end
 
     // we previously flushed so we need to reset the address
-    if (valid_i[0] && reset_address_q) begin
+    if (valid_i[0] && reset_address_q[hartid_i]) begin
       // this is the base of the first instruction
-      pc_d = addr_i[0];
-      reset_address_d = 1'b0;
+      pc_d[hartid_i] = addr_i[0];
+      reset_address_d[hartid_i] = 1'b0;
     end
   end
 
@@ -517,7 +528,7 @@ module instr_queue
         idx_ds_q        <= 'b1;
         idx_is_q        <= '0;
         pc_q            <= '0;
-        reset_address_q <= 1'b1;
+        reset_address_q <= '1;
       end else begin
         pc_q            <= pc_d;
         reset_address_q <= reset_address_d;
@@ -526,7 +537,7 @@ module instr_queue
           idx_ds_q        <= 'b1;
           // binary encoded
           idx_is_q        <= '0;
-          reset_address_q <= 1'b1;
+          reset_address_q <= '1;
         end else begin
           idx_ds_q <= idx_ds_d;
           idx_is_q <= idx_is_d;
@@ -539,12 +550,12 @@ module instr_queue
     always_ff @(posedge clk_i or negedge rst_ni) begin
       if (!rst_ni) begin
         pc_q            <= '0;
-        reset_address_q <= 1'b1;
+        reset_address_q <= '1;
       end else begin
         pc_q            <= pc_d;
         reset_address_q <= reset_address_d;
         if (flush_i) begin
-          reset_address_q <= 1'b1;
+          reset_address_q <= '1;
         end
       end
     end
