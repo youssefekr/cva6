@@ -36,7 +36,7 @@ module csr_buffer
     output logic [CVA6Cfg.XLEN-1:0] csr_result_o,
     // commit the pending CSR OP - TO_BE_COMPLETED
     input logic csr_commit_i,
-    // CSR address to write - COMMIT_STAGE
+    // CSR address to write - CSR_REGFILE
     output logic [11:0] csr_addr_o
 );
   // this is a single entry store buffer for the address of the CSR
@@ -57,7 +57,7 @@ module csr_buffer
     // by default we are ready
     csr_ready_o = 1'b1;
     // if we have a valid uncommitted csr req or are just getting one WITHOUT a commit in, we are not ready
-    if ((csr_reg_q.valid || csr_valid_i) && ~csr_commit_i) csr_ready_o = 1'b0;
+    if ((csr_reg_q.valid && ~csr_commit_i) || csr_valid_i) csr_ready_o = 1'b0; // order of signals slightly improved here. Proably not relevant though.
     // if we got a valid from the scoreboard
     // store the CSR address
     if (csr_valid_i) begin
@@ -65,7 +65,7 @@ module csr_buffer
       csr_reg_n.valid       = 1'b1;
     end
     // if we get a commit and no new valid instruction -> clear the valid bit
-    if (csr_commit_i && ~csr_valid_i) begin
+    if (csr_commit_i) begin // no need to check new valid, since commit and valid are mutually exclusive conditions (except for fences, where this instruction will be flushed so you don care)
       csr_reg_n.valid = 1'b0;
     end
     // clear the buffer if we flushed
