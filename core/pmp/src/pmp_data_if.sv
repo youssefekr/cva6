@@ -36,8 +36,8 @@ module pmp_data_if
     input riscv::priv_lvl_t ld_st_priv_lvl_i,
     input logic ld_st_v_i,
     // PMP
-    input riscv::pmpcfg_t [avoid_neg(CVA6Cfg.NrPMPEntries-1):0] pmpcfg_i,
-    input logic [avoid_neg(CVA6Cfg.NrPMPEntries-1):0][CVA6Cfg.PLEN-3:0] pmpaddr_i
+    input riscv::pmpcfg_t [avoid_neg(CVA6Cfg.NrPMPEntries-1):0] data_pmpcfg_i, if_pmpcfg_i,
+    input logic [avoid_neg(CVA6Cfg.NrPMPEntries-1):0][CVA6Cfg.PLEN-3:0] data_pmpaddr_i, if_pmpaddr_i
 );
   // virtual address causing the exception
   logic [CVA6Cfg.XLEN-1:0] fetch_vaddr_xlen, lsu_vaddr_xlen;
@@ -78,25 +78,18 @@ module pmp_data_if
 
     // if it didn't match any execute region throw an `Instruction Access Fault` (PMA)
     // or if PMP reject the access
-    // Per RISCV privilege spec, a page fault has higher priority than access
-    // fault, therefore do not change the exception type in case of double
-    // exception
-    if (icache_areq_i.fetch_valid) begin
-      if (icache_areq_o.fetch_exception.cause != riscv::INSTR_PAGE_FAULT) begin
-        if (!match_any_execute_region || !pmp_if_allow) begin
-          icache_areq_o.fetch_exception.cause = riscv::INSTR_ACCESS_FAULT;
-          icache_areq_o.fetch_exception.valid = 1'b1;
-          // For exception, the virtual address is required for tval, if no MMU is
-          // instantiated then it will be equal to physical address
-          if (CVA6Cfg.TvalEn) begin
-            icache_areq_o.fetch_exception.tval = fetch_vaddr_xlen;
-          end
-          if (CVA6Cfg.RVH) begin
-            icache_areq_o.fetch_exception.tval2 = '0;
-            icache_areq_o.fetch_exception.tinst = '0;
-            icache_areq_o.fetch_exception.gva   = v_i;
-          end
-        end
+    if (!match_any_execute_region || !pmp_if_allow) begin
+      icache_areq_o.fetch_exception.cause = riscv::INSTR_ACCESS_FAULT;
+      icache_areq_o.fetch_exception.valid = 1'b1;
+      // For exception, the virtual address is required for tval, if no MMU is
+      // instantiated then it will be equal to physical address
+      if (CVA6Cfg.TvalEn) begin
+        icache_areq_o.fetch_exception.tval = fetch_vaddr_xlen;
+      end
+      if (CVA6Cfg.RVH) begin
+        icache_areq_o.fetch_exception.tval2 = '0;
+        icache_areq_o.fetch_exception.tinst = '0;
+        icache_areq_o.fetch_exception.gva   = v_i;
       end
     end
   end
@@ -110,8 +103,8 @@ module pmp_data_if
       // we will always execute on the instruction fetch port
       .access_type_i(riscv::ACCESS_EXEC),
       // Configuration
-      .conf_addr_i  (pmpaddr_i),
-      .conf_i       (pmpcfg_i),
+      .conf_addr_i  (if_pmpaddr_i),
+      .conf_i       (if_pmpcfg_i),
       .allow_o      (pmp_if_allow)
   );
 
@@ -154,8 +147,8 @@ module pmp_data_if
       .priv_lvl_i   (ld_st_priv_lvl_i),
       .access_type_i(pmp_access_type),
       // Configuration
-      .conf_addr_i  (pmpaddr_i),
-      .conf_i       (pmpcfg_i),
+      .conf_addr_i  (data_pmpaddr_i),
+      .conf_i       (data_pmpcfg_i),
       .allow_o      (data_allow_o)
   );
 
@@ -171,7 +164,7 @@ module pmp_data_if
       if (ld_st_priv_lvl_i == riscv::PRIV_LVL_M) begin
         no_locked_data <= 1'b1;
         for (int i = 0; i < CVA6Cfg.NrPMPEntries; i++) begin
-          if (pmpcfg_i[i].locked && pmpcfg_i[i].addr_mode != riscv::OFF) begin
+          if (data_pmpcfg_i[i].locked && data_pmpcfg_i[i].addr_mode != riscv::OFF) begin
             no_locked_data <= no_locked_data & 1'b0;
           end else no_locked_data <= no_locked_data & 1'b1;
         end
@@ -187,7 +180,7 @@ module pmp_data_if
       if (priv_lvl_i == riscv::PRIV_LVL_M) begin
         no_locked_if <= 1'b1;
         for (int i = 0; i < CVA6Cfg.NrPMPEntries; i++) begin
-          if (pmpcfg_i[i].locked && pmpcfg_i[i].addr_mode != riscv::OFF) begin
+          if (if_pmpcfg_i[i].locked && if_pmpcfg_i[i].addr_mode != riscv::OFF) begin
             no_locked_if <= no_locked_if & 1'b0;
           end else no_locked_if <= no_locked_if & 1'b1;
         end
