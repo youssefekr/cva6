@@ -29,15 +29,17 @@ module instr_realign
     // Asynchronous reset active low - SUBSYSTEM
     input logic rst_ni,
     // Fetch flush request - CONTROLLER
-    input logic flush_i,
+    input logic [CVA6Cfg.NrHarts-1:0] flush_i,
     // 32-bit block is valid - CACHE
     input logic valid_i,
     // Instruction is unaligned - FRONTEND
-    output logic serving_unaligned_o,
+    output logic [CVA6Cfg.NrHarts-1:0] serving_unaligned_o,
     // 32-bit block address - CACHE
     input logic [CVA6Cfg.VLEN-1:0] address_i,
     // 32-bit block - CACHE
     input logic [CVA6Cfg.FETCH_WIDTH-1:0] data_i,
+    // Hart ID of instruction - CACHE
+    input logic [CVA6Cfg.LOG2_HARTS-1:0] hartid_i,
     // instruction is valid - FRONTEND
     output logic [CVA6Cfg.INSTR_PER_FETCH-1:0] valid_o,
     // Instruction address - FRONTEND
@@ -54,24 +56,27 @@ module instr_realign
   end
 
   // save the unaligned part of the instruction to this ff
-  logic [15:0] unaligned_instr_d, unaligned_instr_q;
+  logic [15:0] unaligned_instr_d;
+  logic [CVA6Cfg.NrHarts-1:0][15:0] unaligned_instr_q;
   // the last instruction was unaligned
-  logic unaligned_d, unaligned_q;
+  logic unaligned_d;
+  logic [CVA6Cfg.NrHarts-1:0] unaligned_q;
   // register to save the unaligned address
-  logic [CVA6Cfg.VLEN-1:0] unaligned_address_d, unaligned_address_q;
+  logic [CVA6Cfg.VLEN-1:0] unaligned_address_d;
+  logic [CVA6Cfg.NrHarts-1:0][CVA6Cfg.VLEN-1:0] unaligned_address_q;
   // we have an unaligned instruction
   assign serving_unaligned_o = unaligned_q;
 
   // Instruction re-alignment
   if (CVA6Cfg.FETCH_WIDTH == 32) begin : realign_bp_32
     always_comb begin : re_align
-      unaligned_d = unaligned_q;
+      unaligned_d = unaligned_q[hartid_i];
       unaligned_address_d = {address_i[CVA6Cfg.VLEN-1:2], 2'b10};
       unaligned_instr_d = data_i[31:16];
 
       valid_o[0] = valid_i;
-      instr_o[0] = unaligned_q ? {data_i[15:0], unaligned_instr_q} : data_i[31:0];
-      addr_o[0] = unaligned_q ? unaligned_address_q : address_i;
+      instr_o[0] = unaligned_q[hartid_i] ? {data_i[15:0], unaligned_instr_q[hartid_i]} : data_i[31:0];
+      addr_o[0] = unaligned_q[hartid_i] ? unaligned_address_q[hartid_i] : address_i;
 
       if (CVA6Cfg.INSTR_PER_FETCH != 1) begin
         valid_o[CVA6Cfg.INSTR_PER_FETCH-1] = 1'b0;
@@ -79,7 +84,7 @@ module instr_realign
         addr_o[CVA6Cfg.INSTR_PER_FETCH-1]  = {address_i[CVA6Cfg.VLEN-1:2], 2'b10};
       end
       // this instruction is compressed or the last instruction was unaligned
-      if (instr_is_compressed[0] || unaligned_q) begin
+      if (instr_is_compressed[0] || unaligned_q[hartid_i]) begin
         // check if this is instruction is still unaligned e.g.: it is not compressed
         // if its compressed re-set unaligned flag
         // for 32 bit we can simply check the next instruction and whether it is compressed or not
@@ -116,8 +121,8 @@ module instr_realign
   end else if (CVA6Cfg.FETCH_WIDTH == 64) begin : realign_bp_64
     always_comb begin : re_align
       unaligned_d         = 1'b0;
-      unaligned_address_d = unaligned_address_q;
-      unaligned_instr_d   = unaligned_instr_q;
+      unaligned_address_d = unaligned_address_q[hartid_i];
+      unaligned_instr_d   = unaligned_instr_q[hartid_i];
 
       valid_o             = '0;
       instr_o[0]          = '0;
@@ -134,11 +139,11 @@ module instr_realign
           valid_o[0]  = valid_i;
           valid_o[1]  = valid_i;
 
-          unaligned_d = unaligned_q;
+          unaligned_d = unaligned_q[hartid_i];
 
           // last instruction was unaligned
           // TODO how are jumps + unaligned managed?
-          if (unaligned_q) begin
+          if (unaligned_q[hartid_i]) begin
             // for 64 bit there exist the following options:
             //     64  48  32  16  0
             //     | 3 | 2 | 1 | 0 | <- instruction slot
@@ -149,8 +154,8 @@ module instr_realign
             // | * | C | C | C |   U   | -> aligned
             // Legend: C = compressed, I = 32 bit instruction, U = unaligned upper half
 
-            instr_o[0] = {data_i[15:0], unaligned_instr_q};
-            addr_o[0]  = unaligned_address_q;
+            instr_o[0] = {data_i[15:0], unaligned_instr_q[hartid_i]};
+            addr_o[0]  = unaligned_address_q[hartid_i];
 
             instr_o[1] = data_i[47:16];
             addr_o[1]  = {address_i[CVA6Cfg.VLEN-1:3], 3'b010};
@@ -346,19 +351,21 @@ module instr_realign
 
   always_ff @(posedge clk_i or negedge rst_ni) begin
     if (~rst_ni) begin
-      unaligned_q         <= 1'b0;
+      unaligned_q         <= '0;
       unaligned_address_q <= '0;
       unaligned_instr_q   <= '0;
     end else begin
       if (valid_i) begin
-        unaligned_address_q <= unaligned_address_d;
-        unaligned_instr_q   <= unaligned_instr_d;
+        unaligned_address_q[hartid_i] <= unaligned_address_d;
+        unaligned_instr_q[hartid_i]   <= unaligned_instr_d;
       end
 
-      if (flush_i) begin
-        unaligned_q <= 1'b0;
-      end else if (valid_i) begin
-        unaligned_q <= unaligned_d;
+      for (int i = 0; i < CVA6Cfg.NrHarts; i++) begin
+        if (flush_i[i]) begin
+          unaligned_q[i] <= 1'b0;
+        end else if (valid_i && (hartid_i == i)) begin
+          unaligned_q[i] <= unaligned_d;
+        end
       end
     end
   end
