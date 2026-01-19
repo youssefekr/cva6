@@ -33,27 +33,31 @@ module frontend
     // Flush branch prediction - zero
     input logic flush_bp_i,
     // Flush requested by FENCE, mis-predict and exception - CONTROLLER
-    input logic flush_i,
+    input logic [CVA6Cfg.NrHarts-1:0] flush_i,
     // Halt requested by WFI and Accelerate port - CONTROLLER
-    input logic halt_i,
+    input logic [CVA6Cfg.NrHarts-1:0]  halt_i,
     // Halt frontend - CONTROLLER (in the case of fence_i to avoid fetching an old instruction)
     input logic halt_frontend_i,
     // Set COMMIT PC as next PC requested by FENCE, CSR side-effect and Accelerate port - CONTROLLER
-    input logic set_pc_commit_i,
+    input logic [CVA6Cfg.NrHarts-1:0] set_pc_commit_i,
     // COMMIT PC - COMMIT
     input logic [CVA6Cfg.VLEN-1:0] pc_commit_i,
+    // previous COMMIT PC - COMMIT
+    input logic [CVA6Cfg.NrHarts-1:0][CVA6Cfg.VLEN-1:0] prev_pc_commit_i,
     // Exception event - COMMIT
-    input logic ex_valid_i,
+    input logic [CVA6Cfg.NrHarts-1:0] ex_valid_i,
+    // I$ flush - CONTROLLER
+    input logic flush_icache_i,
     // Mispredict event and next PC - EXECUTE
     input bp_resolve_t resolved_branch_i,
     // Return from exception event - CSR
-    input logic eret_i,
+    input logic [CVA6Cfg.NrHarts-1:0] eret_i,
     // Next PC when returning from exception - CSR
-    input logic [CVA6Cfg.VLEN-1:0] epc_i,
+    input logic  [CVA6Cfg.NrHarts-1:0][CVA6Cfg.VLEN-1:0] epc_i,
     // Next PC when jumping into exception - CSR
-    input logic [CVA6Cfg.VLEN-1:0] trap_vector_base_i,
+    input logic  [CVA6Cfg.NrHarts-1:0][CVA6Cfg.VLEN-1:0] trap_vector_base_i,
     // Debug event - CSR
-    input logic set_debug_pc_i,
+    input logic  [CVA6Cfg.NrHarts-1:0] set_debug_pc_i,
     // Debug mode state - CSR
     input logic debug_mode_i,
     // Handshake between CACHE and FRONTEND (fetch) - CACHES
@@ -98,20 +102,25 @@ module frontend
   logic                            [          CVA6Cfg.GPLEN-1:0] icache_gpaddr_q;
   logic                            [                       31:0] icache_tinst_q;
   logic                                                          icache_gva_q;
+  logic                            [CVA6Cfg.LOG2_HARTS-1:0] icache_hartid_q;
   logic                                                          instr_queue_ready;
   logic                            [CVA6Cfg.INSTR_PER_FETCH-1:0] instr_queue_consumed;
   // upper-most branch-prediction from last cycle
-  btb_prediction_t                                               btb_q;
-  bht_prediction_t                                               bht_q;
+  btb_prediction_t                 [        CVA6Cfg.NrHarts-1:0] btb_q;
+  bht_prediction_t                 [        CVA6Cfg.NrHarts-1:0] bht_q;
   // instruction fetch is ready
   logic                                                          if_ready;
-  logic [CVA6Cfg.VLEN-1:0] npc_d, npc_q;  // next PC
+  logic [CVA6Cfg.NrHarts-1:0][CVA6Cfg.VLEN-1:0] npc_d, npc_q;  // next PC
 
   // indicates whether we come out of reset (then we need to load boot_addr_i)
   logic                                       npc_rst_load_q;
 
   logic                                       replay;
   logic [                   CVA6Cfg.VLEN-1:0] replay_addr;
+  logic [        CVA6Cfg.LOG2_HARTS-1:0] replay_hartid;
+
+  // next hart to be fetched
+  logic [CVA6Cfg.LOG2_HARTS-1:0] next_hart; // hard code it  until hart schduler is made
 
   // shift amount
   logic [$clog2(CVA6Cfg.INSTR_PER_FETCH)-1:0] shamt;
@@ -136,17 +145,17 @@ module frontend
   logic            [CVA6Cfg.INSTR_PER_FETCH-1:0][CVA6Cfg.VLEN-1:0] addr;
   logic            [CVA6Cfg.INSTR_PER_FETCH-1:0]                   instruction_valid;
   // BHT, BTB and RAS prediction
-  bht_prediction_t [CVA6Cfg.INSTR_PER_FETCH-1:0]                   bht_prediction;
-  btb_prediction_t [CVA6Cfg.INSTR_PER_FETCH-1:0]                   btb_prediction;
+  bht_prediction_t [CVA6Cfg.NrHarts-1:0][CVA6Cfg.INSTR_PER_FETCH-1:0]                   bht_prediction;
+  btb_prediction_t [CVA6Cfg.NrHarts-1:0][CVA6Cfg.INSTR_PER_FETCH-1:0]                   btb_prediction;
   bht_prediction_t [CVA6Cfg.INSTR_PER_FETCH-1:0]                   bht_prediction_shifted;
   btb_prediction_t [CVA6Cfg.INSTR_PER_FETCH-1:0]                   btb_prediction_shifted;
-  ras_t                                                            ras_predict;
+  ras_t            [        CVA6Cfg.NrHarts-1:0]                   ras_predict;
   logic            [           CVA6Cfg.VLEN-1:0]                   vpc_btb;
   logic            [           CVA6Cfg.VLEN-1:0]                   vpc_bht;
 
   // branch-predict update
   logic                                                            is_mispredict;
-  logic ras_push, ras_pop;
+  logic [CVA6Cfg.NrHarts-1:0] ras_push, ras_pop;
   logic [           CVA6Cfg.VLEN-1:0] ras_update;
 
   // Instruction FIFO
@@ -155,18 +164,20 @@ module frontend
   logic [CVA6Cfg.INSTR_PER_FETCH-1:0] taken_rvi_cf;
   logic [CVA6Cfg.INSTR_PER_FETCH-1:0] taken_rvc_cf;
 
-  logic                               serving_unaligned;
+  logic [        CVA6Cfg.NrHarts-1:0] serving_unaligned;
+  logic [CVA6Cfg.NrHarts-1:0] flush_realign;
   // Re-align instructions
   instr_realign #(
       .CVA6Cfg(CVA6Cfg)
   ) i_instr_realign (
       .clk_i              (clk_i),
       .rst_ni             (rst_ni),
-      .flush_i            (icache_dreq_o.kill_s2),
+      .flush_i            (flush_realign),
       .valid_i            (icache_valid_q),
       .serving_unaligned_o(serving_unaligned),
       .address_i          (icache_vaddr_q),
       .data_i             (icache_data_q),
+      .hartid_i           (icache_hartid_q),
       .valid_o            (instruction_valid),
       .addr_o             (addr),
       .instr_o            (instr)
@@ -178,22 +189,22 @@ module frontend
   // in case we are serving an unaligned instruction in instr[0] we need to take
   // the prediction we saved from the previous fetch
   if (CVA6Cfg.RVC) begin : gen_btb_prediction_shifted
-    assign bht_prediction_shifted[0] = (serving_unaligned) ? bht_q : bht_prediction[addr[0][$clog2(
+    assign bht_prediction_shifted[0] = (serving_unaligned[icache_hartid_q]) ? bht_q[icache_hartid_q] : bht_prediction[CVA6Cfg.MmuPresent ? icache_hartid_q : 0][addr[0][$clog2(
         CVA6Cfg.INSTR_PER_FETCH
     ):1]];
-    assign btb_prediction_shifted[0] = (serving_unaligned) ? btb_q : btb_prediction[addr[0][$clog2(
+    assign btb_prediction_shifted[0] = (serving_unaligned[icache_hartid_q]) ? btb_q[icache_hartid_q] : btb_prediction[CVA6Cfg.MmuPresent ? icache_hartid_q : 0][addr[0][$clog2(
         CVA6Cfg.INSTR_PER_FETCH
     ):1]];
 
     // for all other predictions we can use the generated address to index
     // into the branch prediction data structures
     for (genvar i = 1; i < CVA6Cfg.INSTR_PER_FETCH; i++) begin : gen_prediction_address
-      assign bht_prediction_shifted[i] = bht_prediction[addr[i][$clog2(CVA6Cfg.INSTR_PER_FETCH):1]];
-      assign btb_prediction_shifted[i] = btb_prediction[addr[i][$clog2(CVA6Cfg.INSTR_PER_FETCH):1]];
+      assign bht_prediction_shifted[i] = bht_prediction[CVA6Cfg.MmuPresent ? icache_hartid_q : 0][addr[i][$clog2(CVA6Cfg.INSTR_PER_FETCH):1]];
+      assign btb_prediction_shifted[i] = btb_prediction[CVA6Cfg.MmuPresent ? icache_hartid_q : 0][addr[i][$clog2(CVA6Cfg.INSTR_PER_FETCH):1]];
     end
   end else begin
-    assign bht_prediction_shifted[0] = (serving_unaligned) ? bht_q : bht_prediction[addr[0][1]];
-    assign btb_prediction_shifted[0] = (serving_unaligned) ? btb_q : btb_prediction[addr[0][1]];
+    assign bht_prediction_shifted[0] = (serving_unaligned[icache_hartid_q]) ? bht_q[icache_hartid_q] : bht_prediction[CVA6Cfg.MmuPresent ? icache_hartid_q : 0][addr[0][1]];
+    assign btb_prediction_shifted[0] = (serving_unaligned[icache_hartid_q]) ? btb_q[icache_hartid_q] : btb_prediction[CVA6Cfg.MmuPresent ? icache_hartid_q : 0][addr[0][1]];
   end
   ;
 
@@ -228,8 +239,8 @@ module frontend
 
     for (int i = 0; i < CVA6Cfg.INSTR_PER_FETCH; i++) cf_type[i] = ariane_pkg::NoCF;
 
-    ras_push = 1'b0;
-    ras_pop = 1'b0;
+    ras_push = '0;
+    ras_pop = '0;
     ras_update = '0;
 
     // lower most prediction gets precedence
@@ -240,8 +251,8 @@ module frontend
         4'b0000: ;  // regular instruction e.g.: no branch
         // unconditional jump to register, we need the BTB to resolve this
         4'b0001: begin
-          ras_pop  = 1'b0;
-          ras_push = 1'b0;
+          ras_pop  = '0;
+          ras_push = '0;
           if (CVA6Cfg.BTBEntries != 0 && btb_prediction_shifted[i].valid) begin
             predict_address = btb_prediction_shifted[i].target_address;
             cf_type[i] = ariane_pkg::JumpR;
@@ -249,8 +260,8 @@ module frontend
         end
         // its an unconditional jump to an immediate
         4'b0010: begin
-          ras_pop = 1'b0;
-          ras_push = 1'b0;
+          ras_pop = '0;
+          ras_push = '0;
           taken_rvi_cf[i] = rvi_jump[i];
           taken_rvc_cf[i] = rvc_jump[i];
           cf_type[i] = ariane_pkg::Jump;
@@ -258,15 +269,15 @@ module frontend
         // return
         4'b0100: begin
           // make sure to only alter the RAS if we actually consumed the instruction
-          ras_pop = ras_predict.valid & instr_queue_consumed[i];
-          ras_push = 1'b0;
-          predict_address = ras_predict.ra;
+          ras_pop[icache_hartid_q] = ras_predict[icache_hartid_q].valid & instr_queue_consumed[i];
+          ras_push= '0;
+          predict_address = ras_predict[icache_hartid_q].ra;
           cf_type[i] = ariane_pkg::Return;
         end
         // branch prediction
         4'b1000: begin
-          ras_pop  = 1'b0;
-          ras_push = 1'b0;
+          ras_pop  = '0;
+          ras_push = '0;
           // if we have a valid dynamic prediction use it
           if (bht_prediction_shifted[i].valid) begin
             taken_rvi_cf[i] = rvi_branch[i] & bht_prediction_shifted[i].taken;
@@ -287,7 +298,7 @@ module frontend
       // if this instruction, in addition, is a call, save the resulting address
       // but only if we actually consumed the address
       if (is_call[i]) begin
-        ras_push   = instr_queue_consumed[i];
+        ras_push[icache_hartid_q]   = instr_queue_consumed[i];
         ras_update = addr[i] + (rvc_call[i] ? 2 : 4);
       end
       // calculate the jump target address
@@ -303,31 +314,42 @@ module frontend
     // Check that we encountered a control flow and that for a return the RAS
     // contains a valid prediction.
     for (int i = 0; i < CVA6Cfg.INSTR_PER_FETCH; i++)
-    bp_valid |= ((cf_type[i] != NoCF & cf_type[i] != Return) | ((cf_type[i] == Return) & ras_predict.valid));
+    bp_valid |= ((cf_type[i] != NoCF & cf_type[i] != Return) | ((cf_type[i] == Return) & ras_predict[icache_hartid_q].valid));
   end
   assign is_mispredict = resolved_branch_i.valid & resolved_branch_i.is_mispredict;
 
   // Cache interface
   // Gate ICache requests and NPC updates during fence.i
-  assign icache_dreq_o.req = instr_queue_ready & ~halt_frontend_i;
-  assign if_ready = icache_dreq_i.ready & instr_queue_ready & ~halt_frontend_i;
+  assign icache_dreq_o.req = instr_queue_ready & ~halt_frontend_i & !(&halt_i && CVA6Cfg.MultihartEn);
+  assign icache_dreq_o.hartid = next_hart;
+  assign if_ready = icache_dreq_i.ready & instr_queue_ready & ~halt_frontend_i & !(&halt_i && CVA6Cfg.MultihartEn);
   // We need to flush the cache pipeline if:
   // 1. We mispredicted
   // 2. Want to flush the whole processor front-end
   // 3. Need to replay an instruction because the fetch-fifo was full
-  assign icache_dreq_o.kill_s1 = is_mispredict | flush_i | replay;
+  always_comb begin
+    flush_realign = flush_i;
+    flush_realign[replay_hartid] |= replay;
+    flush_realign[icache_hartid_q] |= bp_valid;
+  end
+  assign icache_dreq_o.kill_s1 = flush_i[icache_dreq_o.hartid] || replay && replay_hartid == icache_dreq_o.hartid;
   // if we have a valid branch-prediction we need to only kill the last cache request
   // also if we killed the first stage we also need to kill the second stage (inclusive flush)
-  assign icache_dreq_o.kill_s2 = icache_dreq_o.kill_s1 | bp_valid;
+  assign icache_dreq_o.kill_s2 = flush_i[icache_dreq_i.hartid] || (replay && replay_hartid == icache_dreq_i.hartid) || (bp_valid && icache_hartid_q == icache_dreq_i.hartid);
 
   // Update Control Flow Predictions
   bht_update_t bht_update;
   btb_update_t btb_update;
 
   // assert on branch, deassert when resolved
-  logic speculative_q, speculative_d;
-  assign speculative_d = (speculative_q && !resolved_branch_i.valid || |is_branch || |is_return || |is_jalr) && !flush_i;
-  assign icache_dreq_o.spec = speculative_d;
+  logic [CVA6Cfg.NrHarts-1:0] speculative_q, speculative_d;
+  always_comb begin : speculative_d_gen
+    speculative_d = speculative_q;
+    speculative_d[resolved_branch_i.hartid] &= !resolved_branch_i.valid;
+    speculative_d[next_hart] |= |is_branch || |is_return || |is_jalr; 
+    speculative_d &= ~flush_i;
+  end
+  assign icache_dreq_o.spec = speculative_d[next_hart];
 
   assign bht_update.valid = resolved_branch_i.valid
                                 & (resolved_branch_i.cf_type == ariane_pkg::Branch);
@@ -339,6 +361,20 @@ module frontend
                                 & (resolved_branch_i.cf_type == ariane_pkg::JumpR);
   assign btb_update.pc = resolved_branch_i.pc;
   assign btb_update.target_address = resolved_branch_i.target_address;
+
+  if(CVA6Cfg.MultihartEn) begin
+    // Next Hart
+    hart_schedule #(
+        .CVA6Cfg(CVA6Cfg)
+    ) i_hart_schedule (
+        .clk_i        (clk_i),
+        .rst_ni       (rst_ni),
+        .halt_i       (halt_i),// | 4'b1110), // if need to debug one hart only halt the others
+        .next_hart_o  (next_hart)
+    );
+  end else begin
+    assign next_hart = '0;
+  end
 
   // -------------------
   // Next PC
@@ -361,56 +397,67 @@ module frontend
     // boot_addr_i will be assigned a constant
     // on the top-level.
     if (npc_rst_load_q) begin
-      npc_d         = boot_addr_i;
+      npc_d         = {CVA6Cfg.NrHarts{boot_addr_i}};
       fetch_address = boot_addr_i;
     end else begin
-      fetch_address = npc_q;
+      fetch_address = npc_q[next_hart];
       // keep stable by default
       npc_d         = npc_q;
     end
+    //-1. Icache flush for non-responsible hart
+    if (flush_icache_i) begin
+      npc_d[icache_dreq_i.hartid] = icache_dreq_i.vaddr;
+      if (icache_dreq_i.hartid == next_hart)
+        fetch_address = icache_dreq_i.vaddr;
+    end
     // 0. Branch Prediction
     if (bp_valid) begin
-      fetch_address = predict_address;
-      npc_d = predict_address;
+      npc_d[icache_hartid_q] = predict_address;
+      if (icache_hartid_q == next_hart)
+        fetch_address = predict_address;
     end
     // 1. Default assignment
     if (if_ready) begin
-      npc_d = {
+      npc_d[next_hart] = {
         fetch_address[CVA6Cfg.VLEN-1:CVA6Cfg.FETCH_ALIGN_BITS] + 1, {CVA6Cfg.FETCH_ALIGN_BITS{1'b0}}
       };
     end
     // 2. Replay instruction fetch
     if (replay) begin
-      npc_d = replay_addr;
+      npc_d[replay_hartid] = replay_addr;
     end
     // 3. Control flow change request
     if (is_mispredict) begin
-      npc_d = resolved_branch_i.target_address;
+      npc_d[resolved_branch_i.hartid] = resolved_branch_i.target_address;
     end
-    // 4. Return from environment call
-    if (eret_i) begin
-      npc_d = epc_i;
+    for(int i = 0; i < CVA6Cfg.NrHarts; i++) begin
+      // 4. Return from environment call
+      if (eret_i[i]) begin
+        npc_d[i] = epc_i[i];
+      end
+      // 5. Exception/Interrupt
+      if (ex_valid_i[i]) begin
+        npc_d[i] = trap_vector_base_i[i];
+      end
+      // 6. Pipeline Flush because of CSR side effects
+      // On a pipeline flush start fetching from the next address
+      // of the instruction in the commit stage
+      // we either came here from a flush request of a CSR instruction or AMO,
+      // so as CSR or AMO instructions do not exist in a compressed form
+      // we can unconditionally do PC + 4 here
+      // or if the commit stage is halted, just take the current pc of the
+      // instruction in the commit stage
+      // TODO(zarubaf) This adder can at least be merged with the one in the csr_regfile stage
+      if (set_pc_commit_i[i]) begin
+        npc_d[i] = CVA6Cfg.MultihartEn ? 
+                    (pc_commit_i + {{CVA6Cfg.VLEN - 3{1'b0}}, 3'b100}) :
+                    pc_commit_i + (halt_i ? '0 : {{CVA6Cfg.VLEN - 3{1'b0}}, 3'b100});
+      end
+      // 7. Debug
+      // enter debug on a hard-coded base-address
+      if (CVA6Cfg.DebugEn && set_debug_pc_i[i])
+        npc_d[i] = CVA6Cfg.DmBaseAddress[CVA6Cfg.VLEN-1:0] + CVA6Cfg.HaltAddress[CVA6Cfg.VLEN-1:0];
     end
-    // 5. Exception/Interrupt
-    if (ex_valid_i) begin
-      npc_d = trap_vector_base_i;
-    end
-    // 6. Pipeline Flush because of CSR side effects
-    // On a pipeline flush start fetching from the next address
-    // of the instruction in the commit stage
-    // we either came here from a flush request of a CSR instruction or AMO,
-    // so as CSR or AMO instructions do not exist in a compressed form
-    // we can unconditionally do PC + 4 here
-    // or if the commit stage is halted, just take the current pc of the
-    // instruction in the commit stage
-    // TODO(zarubaf) This adder can at least be merged with the one in the csr_regfile stage
-    if (set_pc_commit_i) begin
-      npc_d = pc_commit_i + (halt_i ? '0 : {{CVA6Cfg.VLEN - 3{1'b0}}, 3'b100});
-    end
-    // 7. Debug
-    // enter debug on a hard-coded base-address
-    if (CVA6Cfg.DebugEn && set_debug_pc_i)
-      npc_d = CVA6Cfg.DmBaseAddress[CVA6Cfg.VLEN-1:0] + CVA6Cfg.HaltAddress[CVA6Cfg.VLEN-1:0];
     icache_dreq_o.vaddr = fetch_address;
   end
 
@@ -426,6 +473,7 @@ module frontend
       icache_data_q     <= '0;
       icache_valid_q    <= 1'b0;
       icache_vaddr_q    <= 'b0;
+      icache_hartid_q   <= 'b0;
       icache_gpaddr_q   <= 'b0;
       icache_tinst_q    <= 'b0;
       icache_gva_q      <= 1'b0;
@@ -440,6 +488,7 @@ module frontend
       if (icache_dreq_i.valid) begin
         icache_data_q  <= icache_data;
         icache_vaddr_q <= icache_dreq_i.vaddr;
+        icache_hartid_q <= icache_dreq_i.hartid;
         if (CVA6Cfg.RVH) begin
           icache_gpaddr_q <= icache_dreq_i.ex.tval2[CVA6Cfg.GPLEN-1:0];
           icache_tinst_q  <= icache_dreq_i.ex.tinst;
@@ -461,8 +510,8 @@ module frontend
           icache_ex_valid_q <= ariane_pkg::FE_NONE;
         end
         // save the uppermost prediction
-        btb_q <= btb_prediction[CVA6Cfg.INSTR_PER_FETCH-1];
-        bht_q <= bht_prediction[CVA6Cfg.INSTR_PER_FETCH-1];
+        btb_q[icache_hartid_q] <= btb_prediction[CVA6Cfg.MmuPresent ? icache_hartid_q : 0][CVA6Cfg.INSTR_PER_FETCH-1];
+        bht_q[icache_hartid_q] <= bht_prediction[CVA6Cfg.MmuPresent ? icache_hartid_q : 0][CVA6Cfg.INSTR_PER_FETCH-1];
       end
     end
   end
@@ -470,19 +519,21 @@ module frontend
   if (CVA6Cfg.RASDepth == 0) begin
     assign ras_predict = '0;
   end else begin : ras_gen
-    ras #(
-        .CVA6Cfg(CVA6Cfg),
-        .ras_t  (ras_t),
-        .DEPTH  (CVA6Cfg.RASDepth)
-    ) i_ras (
-        .clk_i,
-        .rst_ni,
-        .flush_bp_i(flush_bp_i),
-        .push_i(ras_push),
-        .pop_i(ras_pop),
-        .data_i(ras_update),
-        .data_o(ras_predict)
-    );
+    for (genvar i = 0; i < CVA6Cfg.NrHarts; i++) begin
+      ras #(
+          .CVA6Cfg(CVA6Cfg),
+          .ras_t  (ras_t),
+          .DEPTH  (CVA6Cfg.RASDepth)
+      ) i_ras (
+          .clk_i,
+          .rst_ni,
+          .flush_bp_i(flush_bp_i),
+          .push_i(ras_push[i]),
+          .pop_i(ras_pop[i]),
+          .data_i(ras_update),
+          .data_o(ras_predict[i])
+      );
+    end
   end
 
   //For FPGA, BTB is implemented in read synchronous BRAM
@@ -491,41 +542,49 @@ module frontend
   //Same for BHT
   assign vpc_btb = (CVA6Cfg.FpgaEn) ? icache_dreq_i.vaddr : icache_vaddr_q;
   assign vpc_bht = (CVA6Cfg.FpgaEn && CVA6Cfg.FpgaAlteraEn && icache_dreq_i.valid) ? icache_dreq_i.vaddr : icache_vaddr_q;
-
+  localparam int Harts = CVA6Cfg.MmuPresent ? CVA6Cfg.NrHarts : 1;
+  for(genvar i = 0; i < Harts; i++) begin
   if (CVA6Cfg.BTBEntries == 0) begin
     assign btb_prediction = '0;
   end else begin : btb_gen
+    automatic btb_update_t btb_update_i;
+    assign btb_update_i.pc = btb_update.pc;
+    assign btb_update_i.target_address = btb_update.target_address;
+    assign btb_update_i.valid = (!CVA6Cfg.MmuPresent || CVA6Cfg.MmuPresent && (i == resolved_branch_i.hartid)) ? btb_update.valid : 1'b0;
     btb #(
         .CVA6Cfg   (CVA6Cfg),
         .btb_update_t(btb_update_t),
         .btb_prediction_t(btb_prediction_t),
-        .NR_ENTRIES(CVA6Cfg.BTBEntries)
+        .NR_ENTRIES($ceil(CVA6Cfg.BTBEntries/Harts)) // must be divisb
     ) i_btb (
         .clk_i,
         .rst_ni,
         .flush_bp_i      (flush_bp_i),
         .debug_mode_i,
         .vpc_i           (vpc_btb),
-        .btb_update_i    (btb_update),
-        .btb_prediction_o(btb_prediction)
+        .btb_update_i    (btb_update_i),
+        .btb_prediction_o(btb_prediction[i])
     );
   end
-
+  automatic bht_update_t bht_update_i;
+  assign bht_update_i.pc = bht_update.pc;
+  assign bht_update_i.taken = bht_update.taken;
+  assign bht_update_i.valid = (!CVA6Cfg.MmuPresent || CVA6Cfg.MmuPresent && (i == resolved_branch_i.hartid)) ? bht_update.valid : 1'b0;
   if (CVA6Cfg.BHTEntries == 0) begin
     assign bht_prediction = '0;
   end else if (CVA6Cfg.BPType == config_pkg::BHT) begin : bht_gen
     bht #(
         .CVA6Cfg   (CVA6Cfg),
         .bht_update_t(bht_update_t),
-        .NR_ENTRIES(CVA6Cfg.BHTEntries)
+        .NR_ENTRIES($ceil(CVA6Cfg.BHTEntries/Harts))
     ) i_bht (
         .clk_i,
         .rst_ni,
         .flush_bp_i      (flush_bp_i),
         .debug_mode_i,
         .vpc_i           (vpc_bht),
-        .bht_update_i    (bht_update),
-        .bht_prediction_o(bht_prediction)
+        .bht_update_i    (bht_update_i),
+        .bht_prediction_o(bht_prediction[i])
     );
   end else if (CVA6Cfg.BPType == config_pkg::PH_BHT) begin : bht2lvl_gen
     bht2lvl #(
@@ -536,11 +595,11 @@ module frontend
         .rst_ni,
         .flush_i         (flush_bp_i),
         .vpc_i           (icache_vaddr_q),
-        .bht_update_i    (bht_update),
-        .bht_prediction_o(bht_prediction)
+        .bht_update_i    (bht_update_i),
+        .bht_prediction_o(bht_prediction[i])
     );
   end
-
+  end
   // we need to inspect up to CVA6Cfg.INSTR_PER_FETCH instructions for branches
   // and jumps
   for (genvar i = 0; i < CVA6Cfg.INSTR_PER_FETCH; i++) begin : gen_instr_scan
@@ -573,7 +632,8 @@ module frontend
       .flush_i            (flush_i),
       .instr_i            (instr),                 // from re-aligner
       .addr_i             (addr),                  // from re-aligner
-      .exception_i        (icache_ex_valid_q),     // from I$
+      .hartid_i           (icache_hartid_q),       // from I$
+      .exception_i        (icache_ex_valid_q),
       .exception_addr_i   (icache_vaddr_q),
       .exception_gpaddr_i (icache_gpaddr_q),
       .exception_tinst_i  (icache_tinst_q),
@@ -585,6 +645,7 @@ module frontend
       .ready_o            (instr_queue_ready),
       .replay_o           (replay),
       .replay_addr_o      (replay_addr),
+      .replay_hartid_o    (replay_hartid),
       .fetch_entry_o      (fetch_entry_o),         // to back-end
       .fetch_entry_valid_o(fetch_entry_valid_o),   // to back-end
       .fetch_entry_ready_i(fetch_entry_ready_i)    // to back-end
