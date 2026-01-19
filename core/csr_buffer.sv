@@ -25,7 +25,7 @@ module csr_buffer
     // Asynchronous reset active low - SUBSYSTEM
     input logic rst_ni,
     // Flush CSR - CONTROLLER
-    input logic flush_i,
+    input logic [CVA6Cfg.NrHarts-1:0] flush_i,
     // FU data needed to execute instruction - ISSUE_STAGE
     input fu_data_t fu_data_i,
     // CSR FU is ready - ISSUE_STAGE
@@ -36,7 +36,7 @@ module csr_buffer
     output logic [CVA6Cfg.XLEN-1:0] csr_result_o,
     // commit the pending CSR OP - TO_BE_COMPLETED
     input logic csr_commit_i,
-    // CSR address to write - COMMIT_STAGE
+    // CSR address to write - CSR_REGFILE
     output logic [11:0] csr_addr_o
 );
   // this is a single entry store buffer for the address of the CSR
@@ -44,6 +44,7 @@ module csr_buffer
   struct packed {
     logic [11:0] csr_address;
     logic        valid;
+    logic [CVA6Cfg.LOG2_HARTS-1:0] hartid;
   }
       csr_reg_n, csr_reg_q;
 
@@ -57,19 +58,20 @@ module csr_buffer
     // by default we are ready
     csr_ready_o = 1'b1;
     // if we have a valid uncommitted csr req or are just getting one WITHOUT a commit in, we are not ready
-    if ((csr_reg_q.valid || csr_valid_i) && ~csr_commit_i) csr_ready_o = 1'b0;
+    if ((csr_reg_q.valid && ~csr_commit_i) || csr_valid_i) csr_ready_o = 1'b0; // order of signals slightly improved here. Proably not relevant though.
     // if we got a valid from the scoreboard
     // store the CSR address
     if (csr_valid_i) begin
       csr_reg_n.csr_address = fu_data_i.operand_b[11:0];
       csr_reg_n.valid       = 1'b1;
+      csr_reg_n.hartid      = fu_data_i.hartid;
     end
     // if we get a commit and no new valid instruction -> clear the valid bit
-    if (csr_commit_i && ~csr_valid_i) begin
+    if (csr_commit_i) begin // no need to check new valid, since commit and valid are mutually exclusive conditions (except for fences, where this instruction will be flushed so you don care)
       csr_reg_n.valid = 1'b0;
     end
     // clear the buffer if we flushed
-    if (flush_i) csr_reg_n.valid = 1'b0;
+    if (flush_i[csr_reg_n.hartid]) csr_reg_n.valid = 1'b0;
   end
   // sequential process
   always_ff @(posedge clk_i or negedge rst_ni) begin
