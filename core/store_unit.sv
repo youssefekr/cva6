@@ -20,15 +20,14 @@ module store_unit
     parameter type dcache_req_i_t = logic,
     parameter type dcache_req_o_t = logic,
     parameter type exception_t = logic,
-    parameter type lsu_ctrl_t = logic,
-    parameter type cbo_t = logic
+    parameter type lsu_ctrl_t = logic
 ) (
     // Subsystem Clock - SUBSYSTEM
     input logic clk_i,
     // Asynchronous reset active low - SUBSYSTEM
     input logic rst_ni,
     // Flush - CONTROLLER
-    input logic flush_i,
+    input logic [CVA6Cfg.NrHarts-1:0] flush_i,
     // TO_BE_COMPLETED - TO_BE_COMPLETED
     input logic stall_st_pending_i,
     // TO_BE_COMPLETED - TO_BE_COMPLETED
@@ -135,8 +134,8 @@ module store_unit
   logic [CVA6Cfg.XLEN-1:0] st_data_n, st_data_q;
   logic [(CVA6Cfg.XLEN/8)-1:0] st_be_n, st_be_q;
   logic [1:0] st_data_size_n, st_data_size_q;
+  logic [CVA6Cfg.LOG2_HARTS-1:0] st_hartid_n, st_hartid_q;
   amo_t amo_op_d, amo_op_q;
-  cbo_t cbo_op_d, cbo_op_q;
 
   logic [CVA6Cfg.TRANS_ID_BITS-1:0] trans_id_n, trans_id_q;
 
@@ -160,7 +159,7 @@ module store_unit
     case (state_q)
       // we got a valid store
       IDLE: begin
-        if (valid_i) begin
+        if (valid_i && !(CVA6Cfg.MultihartEn && flush_i[lsu_ctrl_i.hartid])) begin
           state_d = VALID_STORE;
           translation_req_o = 1'b1;
           pop_st_o = 1'b1;
@@ -181,12 +180,12 @@ module store_unit
       VALID_STORE: begin
         valid_o = 1'b1;
         // post this store to the store buffer if we are not flushing
-        if (!flush_i) st_valid = 1'b1;
+        if (!flush_i[st_hartid_q]) st_valid = 1'b1;
 
         st_valid_without_flush = 1'b1;
 
         // we have another request and its not an AMO (the AMO buffer only has depth 1)
-        if ((valid_i && CVA6Cfg.RVA && !instr_is_amo) || (valid_i && !CVA6Cfg.RVA)) begin
+        if (((valid_i && CVA6Cfg.RVA && !instr_is_amo) || (valid_i && !CVA6Cfg.RVA)) && !(CVA6Cfg.MultihartEn && flush_i[lsu_ctrl_i.hartid])) begin
 
           translation_req_o = 1'b1;
           state_d = VALID_STORE;
@@ -209,23 +208,31 @@ module store_unit
 
       // the store queue is currently full
       WAIT_STORE_READY: begin
-        // keep the translation request high
-        translation_req_o = 1'b1;
-
-        if (st_ready && dtlb_hit_i) begin
+        if(CVA6Cfg.MultihartEn && flush_i[st_hartid_q]) begin
           state_d = IDLE;
+        end else begin
+          // keep the translation request high
+          translation_req_o = 1'b1;
+
+          if (st_ready && dtlb_hit_i) begin
+            state_d = IDLE;
+          end
         end
       end
 
       default: begin
-        // we didn't receive a valid translation, wait for one
-        // but we know that the store queue is not full as we could only have landed here if
-        // it wasn't full
-        if (state_q == WAIT_TRANSLATION && CVA6Cfg.MmuPresent) begin
-          translation_req_o = 1'b1;
+        if(CVA6Cfg.MultihartEn && flush_i[st_hartid_q]) begin
+          state_d = IDLE;
+        end else begin
+          // we didn't receive a valid translation, wait for one
+          // but we know that the store queue is not full as we could only have landed here if
+          // it wasn't full
+          if (state_q == WAIT_TRANSLATION && CVA6Cfg.MmuPresent) begin
+            translation_req_o = 1'b1;
 
-          if (dtlb_hit_i) begin
-            state_d = IDLE;
+            if (dtlb_hit_i) begin
+              state_d = IDLE;
+            end
           end
         end
       end
@@ -237,13 +244,13 @@ module store_unit
     // we got an address translation exception (access rights, misaligned or page fault)
     if (ex_i.valid && (state_q != IDLE)) begin
       // the only difference is that we do not want to store this request
-      pop_st_o = 1'b1;
+      pop_st_o = (CVA6Cfg.MultihartEn && flush_i[st_hartid_q]) ? 1'b0 : 1'b1;
       st_valid = 1'b0;
       state_d  = IDLE;
       valid_o  = 1'b1;
     end
 
-    if (flush_i) state_d = IDLE;
+    if (flush_i && !CVA6Cfg.MultihartEn) state_d = IDLE;
   end
 
   // -----------
@@ -256,6 +263,7 @@ module store_unit
     st_data_n = (CVA6Cfg.RVA && instr_is_amo) ? lsu_ctrl_i.data[CVA6Cfg.XLEN-1:0] :
         data_align(lsu_ctrl_i.vaddr[2:0], {{64 - CVA6Cfg.XLEN{1'b0}}, lsu_ctrl_i.data});
     st_data_size_n = extract_transfer_size(lsu_ctrl_i.operation);
+    st_hartid_n = lsu_ctrl_i.hartid;
     // save AMO op for next cycle
     if (CVA6Cfg.RVA) begin
       case (lsu_ctrl_i.operation)
@@ -275,17 +283,6 @@ module store_unit
     end else begin
       amo_op_d = AMO_NONE;
     end
-
-    if (CVA6Cfg.RVZiCbom) begin
-      case (lsu_ctrl_i.operation)
-        ariane_pkg::CBO_INVAL: cbo_op_d = ariane_pkg::CBO_INVAL;
-        ariane_pkg::CBO_CLEAN: cbo_op_d = ariane_pkg::CBO_CLEAN;
-        ariane_pkg::CBO_FLUSH: cbo_op_d = ariane_pkg::CBO_FLUSH;
-        default:               cbo_op_d = ariane_pkg::CBO_NONE;
-      endcase
-    end else begin
-      cbo_op_d = ariane_pkg::CBO_NONE;
-    end
   end
 
   logic store_buffer_valid, amo_buffer_valid;
@@ -301,10 +298,9 @@ module store_unit
   // Store Queue
   // ---------------
   store_buffer #(
-      .CVA6Cfg       (CVA6Cfg),
+      .CVA6Cfg(CVA6Cfg),
       .dcache_req_i_t(dcache_req_i_t),
-      .dcache_req_o_t(dcache_req_o_t),
-      .cbo_t         (cbo_t)
+      .dcache_req_o_t(dcache_req_o_t)
   ) store_buffer_i (
       .clk_i,
       .rst_ni,
@@ -327,9 +323,9 @@ module store_unit
       .paddr_i,
       .rvfi_mem_paddr_o     (rvfi_mem_paddr_o),
       .data_i               (st_data_q),
-      .cbo_op_i             (cbo_op_q),
       .be_i                 (st_be_q),
       .data_size_i          (st_data_size_q),
+      .hartid_i             (st_hartid_q),
       .req_port_i           (req_port_i),
       .req_port_o           (req_port_o)
   );
@@ -347,6 +343,7 @@ module store_unit
         .amo_op_i          (amo_op_q),
         .data_i            (st_data_q),
         .data_size_i       (st_data_size_q),
+        .hartid_i          (st_hartid_q),
         .amo_req_o         (amo_req_o),
         .amo_resp_i        (amo_resp_i),
         .amo_valid_commit_i(amo_valid_commit_i),
@@ -366,17 +363,17 @@ module store_unit
       st_be_q        <= '0;
       st_data_q      <= '0;
       st_data_size_q <= '0;
+      st_hartid_q    <= '0;
       trans_id_q     <= '0;
       amo_op_q       <= AMO_NONE;
-      cbo_op_q       <= ariane_pkg::CBO_NONE;
     end else begin
       state_q        <= state_d;
       st_be_q        <= st_be_n;
       st_data_q      <= st_data_n;
       trans_id_q     <= trans_id_n;
       st_data_size_q <= st_data_size_n;
+      st_hartid_q    <= st_hartid_n;
       amo_op_q       <= amo_op_d;
-      cbo_op_q       <= cbo_op_d;
     end
   end
 
