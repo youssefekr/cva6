@@ -36,9 +36,9 @@ module issue_stage
     // Is scoreboard full - PERF_COUNTERS
     output logic sb_full_o,
     // Prevent from issuing - CONTROLLER
-    input logic flush_unissued_instr_i,
+    input logic [CVA6Cfg.NrHarts-1:0] flush_unissued_instr_i,
     // Flush whole scoreboard - CONTROLLER
-    input logic flush_i,
+    input logic [CVA6Cfg.NrHarts-1:0] flush_i,
     // Stall inserted by Acc dispatcher - ACC_DISPATCHER
     input logic stall_i,
     // Handshake's data with decode stage - ID_STAGE
@@ -76,6 +76,8 @@ module issue_stage
     output logic [CVA6Cfg.NrIssuePorts-1:0] aes_valid_o,
     // Branch unit is valid - EX_STAGE
     output logic [CVA6Cfg.NrIssuePorts-1:0] branch_valid_o,
+    // Hart ID for resolved branch - FRONTEND
+    output logic [CVA6Cfg.NrIssuePorts-1:0][CVA6Cfg.LOG2_HARTS-1:0] branch_hartid_o,
     // Information of branch prediction - EX_STAGE
     output branchpredict_sbe_t branch_predict_o,
     // Signaling that we resolved the branch - EX_STAGE
@@ -94,8 +96,6 @@ module issue_stage
     output logic [1:0] fpu_fmt_o,
     // FPU rm field - EX_STAGE
     output logic [2:0] fpu_rm_o,
-    // FPU early valid - EX_STAGE
-    input logic fpu_early_valid_i,
     // ALU2 FU is valid - EX_STAGE
     output logic [CVA6Cfg.NrIssuePorts-1:0] alu2_valid_o,
     // CSR is valid - EX_STAGE
@@ -151,9 +151,9 @@ module issue_stage
     // Value to write to register file - COMMIT_STAGE
     input logic [CVA6Cfg.NrCommitPorts-1:0][CVA6Cfg.XLEN-1:0] wdata_i,
     // GPR write enable - COMMIT_STAGE
-    input logic [CVA6Cfg.NrCommitPorts-1:0] we_gpr_i,
+    input logic [CVA6Cfg.NrHarts-1:0][CVA6Cfg.NrCommitPorts-1:0] we_gpr_i,
     // FPR write enable - COMMIT_STAGE
-    input logic [CVA6Cfg.NrCommitPorts-1:0] we_fpr_i,
+    input logic [CVA6Cfg.NrHarts-1:0][CVA6Cfg.NrCommitPorts-1:0] we_fpr_i,
     // Instructions to commit - COMMIT_STAGE
     output scoreboard_entry_t [CVA6Cfg.NrCommitPorts-1:0] commit_instr_o,
     // Instruction is cancelled - COMMIT_STAGE
@@ -276,6 +276,7 @@ module issue_stage
       .alu_valid_o             (alu_valid_o),
       .aes_valid_o             (aes_valid_o),
       .branch_valid_o          (branch_valid_o),
+      .branch_hartid_o         (branch_hartid_o),
       .tinst_o                 (tinst_o),
       .branch_predict_o,
       .lsu_ready_i,
@@ -285,7 +286,6 @@ module issue_stage
       .fpu_valid_o,
       .fpu_fmt_o,
       .fpu_rm_o,
-      .fpu_early_valid_i,
       .alu2_valid_o,
       .csr_valid_o,
       .cvxif_valid_o           (xfu_valid_o),
