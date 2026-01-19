@@ -34,7 +34,7 @@ module lsu_bypass
     // Asynchronous reset active low - SUBSYSTEM
     input logic rst_ni,
     // TO_BE_COMPLETED - TO_BE_COMPLETED
-    input logic flush_i,
+    input logic [CVA6Cfg.NrHarts-1:0] flush_i,
 
     // TO_BE_COMPLETED - TO_BE_COMPLETED
     input lsu_ctrl_t lsu_req_i,
@@ -93,11 +93,16 @@ module lsu_bypass
 
     if (pop_st_i && pop_ld_i) mem_n = '0;
 
-    if (flush_i) begin
-      status_cnt = '0;
-      write_pointer = '0;
-      read_pointer = '0;
-      mem_n = '0;
+    for (int i = 0; i < 2; i++) begin
+      if (flush_i[mem_n[i].hartid]) mem_n[i].valid = 1'b0;
+    end
+
+    for (int i = 0; i < 2; i++) begin
+      if (mem_n[read_pointer].valid) break;
+      if (status_cnt) begin
+        read_pointer++;
+        status_cnt--;
+      end
     end
     // default assignments
     read_pointer_n  = read_pointer;
