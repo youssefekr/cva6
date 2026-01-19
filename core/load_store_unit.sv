@@ -27,15 +27,14 @@ module load_store_unit
     parameter type icache_drsp_t = logic,
     parameter type lsu_ctrl_t = logic,
     parameter type acc_mmu_req_t = logic,
-    parameter type acc_mmu_resp_t = logic,
-    parameter type cbo_t = logic
+    parameter type acc_mmu_resp_t = logic
 ) (
     // Subsystem Clock - SUBSYSTEM
     input logic clk_i,
     // Asynchronous reset active low - SUBSYSTEM
     input logic rst_ni,
     // TO_BE_COMPLETED - TO_BE_COMPLETED
-    input logic flush_i,
+    input logic [CVA6Cfg.NrHarts-1:0] flush_i,
     // TO_BE_COMPLETED - TO_BE_COMPLETED
     input logic stall_st_pending_i,
     // TO_BE_COMPLETED - TO_BE_COMPLETED
@@ -77,13 +76,13 @@ module load_store_unit
     input logic [CVA6Cfg.TRANS_ID_BITS-1:0] commit_tran_id_i,
 
     // Enable virtual memory translation - TO_BE_COMPLETED
-    input logic enable_translation_i,
+    input logic [CVA6Cfg.NrHarts-1:0] enable_translation_i,
     // Enable G-Stage memory translation - TO_BE_COMPLETED
-    input logic enable_g_translation_i,
+    input logic [CVA6Cfg.NrHarts-1:0] enable_g_translation_i,
     // Enable virtual memory translation for load/stores - TO_BE_COMPLETED
-    input logic en_ld_st_translation_i,
+    input logic [CVA6Cfg.NrHarts-1:0] en_ld_st_translation_i,
     // Enable G-Stage memory translation for load/stores - TO_BE_COMPLETED
-    input logic en_ld_st_g_translation_i,
+    input logic [CVA6Cfg.NrHarts-1:0] en_ld_st_g_translation_i,
 
     // Accelerator request for CVA6's MMU
     input  acc_mmu_req_t  acc_mmu_req_i,
@@ -95,35 +94,35 @@ module load_store_unit
     output icache_areq_t icache_areq_o,
 
     // Current privilege mode - CSR_REGFILE
-    input  riscv::priv_lvl_t                          priv_lvl_i,
+    input  riscv::priv_lvl_t                          [CVA6Cfg.NrHarts-1:0] priv_lvl_i,
     // Current virtualization mode - CSR_REGFILE
-    input  logic                                      v_i,
+    input  logic                                      [CVA6Cfg.NrHarts-1:0] v_i,
     // Privilege level at which load and stores should happen - CSR_REGFILE
-    input  riscv::priv_lvl_t                          ld_st_priv_lvl_i,
+    input  riscv::priv_lvl_t                          [CVA6Cfg.NrHarts-1:0] ld_st_priv_lvl_i,
     // Virtualization mode at which load and stores should happen - CSR_REGFILE
-    input  logic                                      ld_st_v_i,
+    input  logic                                      [CVA6Cfg.NrHarts-1:0] ld_st_v_i,
     // Instruction is a hyp load/store - CSR_REGFILE
-    output logic                                      csr_hs_ld_st_inst_o,
+    output logic                                      [CVA6Cfg.NrHarts-1:0] csr_hs_ld_st_inst_o,
     // Supervisor User Memory - CSR_REGFILE
-    input  logic                                      sum_i,
+    input  logic                                      [CVA6Cfg.NrHarts-1:0] sum_i,
     // Virtual Supervisor User Memory - CSR_REGFILE
-    input  logic                                      vs_sum_i,
+    input  logic                                      [CVA6Cfg.NrHarts-1:0] vs_sum_i,
     // Make Executable Readable - CSR_REGFILE
-    input  logic                                      mxr_i,
+    input  logic                                      [CVA6Cfg.NrHarts-1:0] mxr_i,
     // Make Executable Readable Virtual Supervisor - CSR_REGFILE
-    input  logic                                      vmxr_i,
+    input  logic                                      [CVA6Cfg.NrHarts-1:0] vmxr_i,
     // TO_BE_COMPLETED - TO_BE_COMPLETED
-    input  logic             [      CVA6Cfg.PPNW-1:0] satp_ppn_i,
+    input  logic             [CVA6Cfg.NrHarts-1:0][      CVA6Cfg.PPNW-1:0] satp_ppn_i,
     // TO_BE_COMPLETED - TO_BE_COMPLETED
-    input  logic             [CVA6Cfg.ASID_WIDTH-1:0] asid_i,
+    input  logic             [CVA6Cfg.NrHarts-1:0][CVA6Cfg.ASID_WIDTH-1:0] asid_i,
     // TO_BE_COMPLETED - TO_BE_COMPLETED
-    input  logic             [      CVA6Cfg.PPNW-1:0] vsatp_ppn_i,
+    input  logic             [CVA6Cfg.NrHarts-1:0][      CVA6Cfg.PPNW-1:0] vsatp_ppn_i,
     // TO_BE_COMPLETED - TO_BE_COMPLETED
-    input  logic             [CVA6Cfg.ASID_WIDTH-1:0] vs_asid_i,
+    input  logic             [CVA6Cfg.NrHarts-1:0][CVA6Cfg.ASID_WIDTH-1:0] vs_asid_i,
     // TO_BE_COMPLETED - TO_BE_COMPLETED
-    input  logic             [      CVA6Cfg.PPNW-1:0] hgatp_ppn_i,
+    input  logic             [CVA6Cfg.NrHarts-1:0][      CVA6Cfg.PPNW-1:0] hgatp_ppn_i,
     // TO_BE_COMPLETED - TO_BE_COMPLETED
-    input  logic             [CVA6Cfg.VMID_WIDTH-1:0] vmid_i,
+    input  logic             [CVA6Cfg.NrHarts-1:0][CVA6Cfg.VMID_WIDTH-1:0] vmid_i,
     // TO_BE_COMPLETED - TO_BE_COMPLETED
     input  logic             [CVA6Cfg.ASID_WIDTH-1:0] asid_to_be_flushed_i,
     // TO_BE_COMPLETED - TO_BE_COMPLETED
@@ -133,13 +132,13 @@ module load_store_unit
     // TO_BE_COMPLETED - TO_BE_COMPLETED
     input  logic             [     CVA6Cfg.GPLEN-1:0] gpaddr_to_be_flushed_i,
     // TLB flush - CONTROLLER
-    input  logic                                      flush_tlb_i,
-    input  logic                                      flush_tlb_vvma_i,
-    input  logic                                      flush_tlb_gvma_i,
+    input  logic             [CVA6Cfg.NrHarts-1:0] flush_tlb_i,
+    input  logic             [CVA6Cfg.NrHarts-1:0] flush_tlb_vvma_i,
+    input  logic             [CVA6Cfg.NrHarts-1:0] flush_tlb_gvma_i,
     // Instruction TLB miss - PERF_COUNTERS
-    output logic                                      itlb_miss_o,
+    output logic                                      [CVA6Cfg.NrHarts-1:0] itlb_miss_o,
     // Data TLB miss - PERF_COUNTERS
-    output logic                                      dtlb_miss_o,
+    output logic                                      [CVA6Cfg.NrHarts-1:0] dtlb_miss_o,
 
     // Data cache request output - CACHES
     input  dcache_req_o_t [2:0] dcache_req_ports_i,
@@ -155,9 +154,9 @@ module load_store_unit
     input  amo_resp_t           amo_resp_i,
 
     // PMP configuration - CSR_REGFILE
-    input riscv::pmpcfg_t [avoid_neg(CVA6Cfg.NrPMPEntries-1):0]                   pmpcfg_i,
+    input riscv::pmpcfg_t [CVA6Cfg.NrHarts-1:0][avoid_neg(CVA6Cfg.NrPMPEntries-1):0]                   pmpcfg_i,
     // PMP address - CSR_REGFILE
-    input logic           [avoid_neg(CVA6Cfg.NrPMPEntries-1):0][CVA6Cfg.PLEN-3:0] pmpaddr_i,
+    input logic           [CVA6Cfg.NrHarts-1:0][avoid_neg(CVA6Cfg.NrPMPEntries-1):0][CVA6Cfg.PLEN-3:0] pmpaddr_i,
 
     // RVFI information - RVFI
     output lsu_ctrl_t                    rvfi_lsu_ctrl_o,
@@ -275,6 +274,7 @@ module load_store_unit
         .misaligned_ex_i(misaligned_exception),
         .lsu_req_i(translation_req),
         .lsu_vaddr_i(mmu_vaddr),
+        .lsu_hartid_i(lsu_ctrl.hartid),
         .lsu_tinst_i(mmu_tinst),
         .lsu_is_store_i(st_translation_req),
         .csr_hs_ld_st_inst_o(csr_hs_ld_st_inst_o),
@@ -354,12 +354,11 @@ module load_store_unit
     assign dcache_req_ports_o[0].data_be       = '1;
     assign dcache_req_ports_o[0].data_size     = 2'b11;
     assign dcache_req_ports_o[0].data_we       = 1'b0;
-    assign dcache_req_ports_o[0].data_wuser    = '0;
     assign dcache_req_ports_o[0].kill_req      = '0;
     assign dcache_req_ports_o[0].tag_valid     = 1'b0;
 
-    assign itlb_miss_o                         = 1'b0;
-    assign dtlb_miss_o                         = 1'b0;
+    assign itlb_miss_o                         = '0;
+    assign dtlb_miss_o                         = '0;
     assign dtlb_ppn                            = lsu_paddr[CVA6Cfg.PLEN-1:12];
     assign dtlb_hit                            = 1'b1;
 
@@ -387,12 +386,14 @@ module load_store_unit
       .lsu_valid_o         (translation_valid),
       .lsu_paddr_o         (mmu_paddr),
       .lsu_exception_o     (mmu_exception),
-      .priv_lvl_i          (priv_lvl_i),
-      .v_i                 (v_i),
-      .ld_st_priv_lvl_i    (ld_st_priv_lvl_i),
-      .ld_st_v_i           (ld_st_v_i),
-      .pmpcfg_i            (pmpcfg_i),
-      .pmpaddr_i           (pmpaddr_i)
+      .priv_lvl_i          (priv_lvl_i[icache_areq_i.fetch_hartid]),
+      .v_i                 (v_i[icache_areq_i.fetch_hartid]),
+      .ld_st_priv_lvl_i    (ld_st_priv_lvl_i[lsu_ctrl.hartid]),
+      .ld_st_v_i           (ld_st_v_i[lsu_ctrl.hartid]),
+      .data_pmpcfg_i       (pmpcfg_i[lsu_ctrl.hartid]),
+      .data_pmpaddr_i      (pmpaddr_i[lsu_ctrl.hartid]),
+      .if_pmpcfg_i         (pmpcfg_i[icache_areq_i.fetch_hartid]),
+      .if_pmpaddr_i        (pmpaddr_i[icache_areq_i.fetch_hartid])
   );
 
   // ------------------
@@ -507,8 +508,7 @@ module load_store_unit
       .dcache_req_i_t(dcache_req_i_t),
       .dcache_req_o_t(dcache_req_o_t),
       .exception_t(exception_t),
-      .lsu_ctrl_t(lsu_ctrl_t),
-      .cbo_t(cbo_t)
+      .lsu_ctrl_t(lsu_ctrl_t)
   ) i_store_unit (
       .clk_i,
       .rst_ni,
@@ -758,7 +758,7 @@ module load_store_unit
           if (CVA6Cfg.RVH) begin
             cva6_misaligned_exception.tval2 = '0;
             cva6_misaligned_exception.tinst = lsu_ctrl.tinst;
-            cva6_misaligned_exception.gva   = ld_st_v_i;
+            cva6_misaligned_exception.gva   = ld_st_v_i[lsu_ctrl.hartid];
           end
         end
         STORE: begin
@@ -770,7 +770,7 @@ module load_store_unit
           if (CVA6Cfg.RVH) begin
             cva6_misaligned_exception.tval2 = '0;
             cva6_misaligned_exception.tinst = lsu_ctrl.tinst;
-            cva6_misaligned_exception.gva   = ld_st_v_i;
+            cva6_misaligned_exception.gva   = ld_st_v_i[lsu_ctrl.hartid];
           end
         end
         default: ;
@@ -788,7 +788,7 @@ module load_store_unit
           if (CVA6Cfg.RVH) begin
             cva6_misaligned_exception.tval2 = '0;
             cva6_misaligned_exception.tinst = lsu_ctrl.tinst;
-            cva6_misaligned_exception.gva   = ld_st_v_i;
+            cva6_misaligned_exception.gva   = ld_st_v_i[lsu_ctrl.hartid];
           end
         end
         STORE: begin
@@ -799,7 +799,7 @@ module load_store_unit
           if (CVA6Cfg.RVH) begin
             cva6_misaligned_exception.tval2 = '0;
             cva6_misaligned_exception.tinst = lsu_ctrl.tinst;
-            cva6_misaligned_exception.gva   = ld_st_v_i;
+            cva6_misaligned_exception.gva   = ld_st_v_i[lsu_ctrl.hartid];
           end
         end
         default: ;
@@ -817,7 +817,7 @@ module load_store_unit
           if (CVA6Cfg.RVH) begin
             cva6_misaligned_exception.tval2 = '0;
             cva6_misaligned_exception.tinst = lsu_ctrl.tinst;
-            cva6_misaligned_exception.gva   = ld_st_v_i;
+            cva6_misaligned_exception.gva   = ld_st_v_i[lsu_ctrl.hartid];
           end
         end
         STORE: begin
@@ -828,7 +828,7 @@ module load_store_unit
           if (CVA6Cfg.RVH) begin
             cva6_misaligned_exception.tval2 = '0;
             cva6_misaligned_exception.tinst = lsu_ctrl.tinst;
-            cva6_misaligned_exception.gva   = ld_st_v_i;
+            cva6_misaligned_exception.gva   = ld_st_v_i[lsu_ctrl.hartid];
           end
         end
         default: ;
@@ -855,7 +855,8 @@ module load_store_unit
     be_i,
     fu_data_i.fu,
     fu_data_i.operation,
-    fu_data_i.trans_id
+    fu_data_i.trans_id,
+    fu_data_i.hartid
   };
 
   lsu_bypass #(
