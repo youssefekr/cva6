@@ -32,7 +32,7 @@ module load_unit
     // Asynchronous reset active low - SUBSYSTEM
     input logic rst_ni,
     // Flush signal - CONTROLLER
-    input logic flush_i,
+    input logic [CVA6Cfg.NrHarts-1:0] flush_i,
     // Load request is valid - LSU_BYPASS
     input logic valid_i,
     // Load request input - LSU_BYPASS
@@ -99,6 +99,7 @@ module load_unit
     logic [CVA6Cfg.TRANS_ID_BITS-1:0]    trans_id;        // scoreboard identifier
     logic [CVA6Cfg.XLEN_ALIGN_BYTES-1:0] address_offset;  // least significant bits of the address
     fu_op                                operation;       // type of load
+    logic [CVA6Cfg.LOG2_HARTS-1:0]       hartid;          // hart ID
   } ldbuf_t;
 
 
@@ -153,9 +154,11 @@ module load_unit
     ldbuf_flushed_d = ldbuf_flushed_q;
     ldbuf_valid_d   = ldbuf_valid_q;
 
-    //  In case of flush, raise the flushed flag in all slots.
-    if (flush_i) begin
-      ldbuf_flushed_d = '1;
+    for (int i = 0; i < CVA6Cfg.NrLoadBufEntries; i++) begin
+      // In case of flush, raise the flushed flag if the corresponding hart is flushed
+      if (flush_i[ldbuf_q[i].hartid]) begin
+        ldbuf_flushed_d[i] = 1'b1;
+      end
     end
     //  Free read entry (in the case of fall-through mode, free the entry
     //  only if there is no pending load)
@@ -196,10 +199,9 @@ module load_unit
   // this is a read-only interface so set the write enable to 0
   assign req_port_o.data_we = 1'b0;
   assign req_port_o.data_wdata = '0;
-  assign req_port_o.cbo_op = ariane_pkg::CBO_NONE;
   // compose the load buffer write data, control is handled in the FSM
   assign ldbuf_wdata = {
-    lsu_ctrl_i.trans_id, lsu_ctrl_i.vaddr[CVA6Cfg.XLEN_ALIGN_BYTES-1:0], lsu_ctrl_i.operation
+    lsu_ctrl_i.trans_id, lsu_ctrl_i.vaddr[CVA6Cfg.XLEN_ALIGN_BYTES-1:0], lsu_ctrl_i.operation, lsu_ctrl_i.hartid
   };
   // output address
   // we can now output the lower 12 bit as the index to the cache
@@ -210,8 +212,6 @@ module load_unit
                                               CVA6Cfg.DCACHE_INDEX_WIDTH];
   // request id = index of the load buffer's entry
   assign req_port_o.data_id = ldbuf_windex;
-  // user field not used
-  assign req_port_o.data_wuser = '0;
   // directly forward exception fields (valid bit is set below)
   assign ex_o.cause = ex_i.cause;
   assign ex_o.tval = ex_i.tval;
@@ -251,7 +251,7 @@ module load_unit
     // In IDLE and SEND_TAG states, this unit can accept a new load request
     // when the load buffer is not full or if there is a response and the
     // load buffer is in fall-through mode
-    accept_req           = (valid_i && (!ldbuf_full || (LDBUF_FALLTHROUGH && ldbuf_r)));
+    accept_req           = (valid_i && (!ldbuf_full || (LDBUF_FALLTHROUGH && ldbuf_r))) && !(CVA6Cfg.MultihartEn && (flush_i[lsu_ctrl_i.hartid] || flush_i[ldbuf_q[ldbuf_rindex].hartid]));
 
     case (state_q)
       IDLE: begin
@@ -289,17 +289,24 @@ module load_unit
 
       // wait here for the page offset to not match anymore
       WAIT_PAGE_OFFSET: begin
+        if (CVA6Cfg.MultihartEn && flush_i[lsu_ctrl_i.hartid]) begin
+          state_d = IDLE;
+        end else begin
         // we make a new request as soon as the page offset does not match anymore
         if (!page_offset_matches_i) begin
           state_d = WAIT_GNT;
         end
+        end
       end
 
       WAIT_GNT: begin
+        if (CVA6Cfg.MultihartEn && flush_i[lsu_ctrl_i.hartid]) begin
+          state_d = IDLE;
+        end else begin
         // keep the translation request up
         translation_req_o   = 1'b1;
         // keep the request up
-        req_port_o.data_req = 1'b1;
+        req_port_o.data_req = CVA6Cfg.MultihartEn ? !flush_i[ldbuf_q[ldbuf_rindex].hartid] : 1'b1;
         // we finally got a data grant
         if (req_port_i.data_gnt) begin
           // so we send the tag in the next cycle
@@ -315,7 +322,7 @@ module load_unit
               state_d = ABORT_TRANSACTION_NI;
             end
           end
-
+        end
         end
         // otherwise we keep waiting on our grant
       end
@@ -377,6 +384,9 @@ module load_unit
         // abort the previous request - free the D$ arbiter
         // we are here because of a TLB miss, we need to abort the current request and give way for the
         // PTW walker to satisfy the TLB miss
+        if (CVA6Cfg.MultihartEn && flush_i[lsu_ctrl_i.hartid]) begin
+          state_d = IDLE;
+        end else begin
         if (state_q == ABORT_TRANSACTION && CVA6Cfg.MmuPresent) begin
           req_port_o.kill_req = 1'b1;
           req_port_o.tag_valid = 1'b1;
@@ -406,11 +416,12 @@ module load_unit
         end else begin
           state_d = IDLE;
         end
+        end
       end
     endcase
 
     // if we just flushed and the queue is not empty or we are getting an rvalid this cycle wait in an extra stage
-    if (flush_i) begin
+    if (flush_i[ldbuf_q[ldbuf_rindex].hartid]) begin
       state_d = WAIT_FLUSH;
     end
   end
