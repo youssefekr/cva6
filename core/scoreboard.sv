@@ -28,9 +28,9 @@ module scoreboard #(
     // Is scoreboard full - PERF_COUNTERS
     output logic                                          sb_full_o,
     // Prevent from issuing - CONTROLLER
-    input  logic                                          flush_unissued_instr_i,
+    input  logic [CVA6Cfg.NrHarts-1:0]                    flush_unissued_instr_i,
     // Flush whole scoreboard - CONTROLLER
-    input  logic                                          flush_i,
+    input  logic [CVA6Cfg.NrHarts-1:0]                    flush_i,
     // Writeback Handling of CVXIF
     // TO_BE_COMPLETED - ISSUE_READ_OPERANDS
     input  logic                                          x_transaction_accepted_i,
@@ -94,6 +94,8 @@ module scoreboard #(
   typedef struct packed {
     logic issued;  // this bit indicates whether we issued this instruction e.g.: if it is valid
     logic cancelled;  // this instruction was cancelled (speculative scoreboard)
+    logic flushed;  // this instruction was flushed (multi-hart support)
+    logic was_fp;
     logic is_rd_fpr_flag;  // redundant meta info, added for speed
     scoreboard_entry_t sbe;  // this is the score board entry we will send to ex
   } sb_mem_t;
@@ -114,6 +116,8 @@ module scoreboard #(
   logic [CVA6Cfg.NrCommitPorts-1:0][CVA6Cfg.TRANS_ID_BITS-1:0] commit_pointer_n, commit_pointer_q;
   logic [$clog2(CVA6Cfg.NrCommitPorts):0] num_commit;
 
+  logic [CVA6Cfg.TRANS_ID_BITS-1:0] flushed_count, flushed_idx;
+
   for (genvar i = 0; i < CVA6Cfg.NR_SB_ENTRIES; i++) begin
     assign still_issued[i] = mem_q[i].issued & ~mem_q[i].cancelled;
   end
@@ -123,7 +127,7 @@ module scoreboard #(
   end
 
   // the issue queue is full don't issue any new instructions
-  assign issue_full[0] = &issued_instrs_even_odd[0] && &issued_instrs_even_odd[1];
+  assign issue_full[0] = &issued_instrs_even_odd[0] && &issued_instrs_even_odd[1] || (mem_q[issue_pointer_q].was_fp && decoded_instr_i[0].fu == ariane_pkg::FPU); // if current entry was fp flushed, do not issue to fpu until fpu flag has been lowered
   if (CVA6Cfg.SuperscalarEn) begin : assign_issue_full
     // Need two slots available to issue two instructions.
     // They are next to each other so one must be even and one odd
@@ -168,13 +172,15 @@ module scoreboard #(
 
     // if we got an acknowledge from the issue stage, put this scoreboard entry in the queue
     for (int unsigned i = 0; i < CVA6Cfg.NrIssuePorts; i++) begin
-      if (decoded_instr_valid_i[i] && decoded_instr_ack_o[i] && !flush_unissued_instr_i) begin
+      if (decoded_instr_valid_i[i] && decoded_instr_ack_o[i] && !flush_unissued_instr_i[decoded_instr_i[i].hartid]) begin
         // the decoded instruction we put in there is valid (1st bit)
         // increase the issue counter and advance issue pointer
         num_issue += 'd1;
         mem_n[issue_pointer[i]] = '{
             issued: 1'b1,
             cancelled: 1'b0,
+            flushed: 1'b0,
+            was_fp: 1'b0,
             is_rd_fpr_flag: CVA6Cfg.FpPresent && ariane_pkg::is_rd_fpr(decoded_instr_i[i].op),
             sbe: decoded_instr_i[i]
         };
@@ -195,7 +201,9 @@ module scoreboard #(
     for (int unsigned i = 0; i < CVA6Cfg.NrWbPorts; i++) begin
       // check if this instruction was issued (e.g.: it could happen after a flush that there is still
       // something in the pipeline e.g. an incomplete memory operation)
-      if (wt_valid_i[i] && mem_q[trans_id_i[i]].issued) begin
+      if (mem_q[trans_id_i[3]].was_fp && i == 3 && wt_valid_i[3]) begin
+        mem_n[trans_id_i[3]].was_fp = 1'b0;
+      end else if (wt_valid_i[i] && mem_q[trans_id_i[i]].issued) begin
         if (mem_q[trans_id_i[i]].sbe.is_double_rd_macro_instr && mem_q[trans_id_i[i]].sbe.is_macro_instr) begin
           if (mem_q[trans_id_i[i]].sbe.is_last_macro_instr) begin
             mem_n[trans_id_i[i]].sbe.valid = 1'b1;
@@ -240,17 +248,31 @@ module scoreboard #(
     // ------------
     // we've got an acknowledge from commit
     for (int i = 0; i < CVA6Cfg.NrCommitPorts; i++) begin
-      if (commit_ack_i[i]) begin
+      if (commit_ack_i[i] || mem_q[commit_pointer_q[0]].flushed) begin
         // this instruction is no longer in issue e.g.: it is considered finished
         mem_n[commit_pointer_q[i]].issued    = 1'b0;
         mem_n[commit_pointer_q[i]].cancelled = 1'b0;
         mem_n[commit_pointer_q[i]].sbe.valid = 1'b0;
+        mem_n[commit_pointer_n[i]].flushed   = 1'b0;
       end
     end
 
     // ------
     // Flush
     // ------
+    if (CVA6Cfg.MultihartEn) begin
+      for (int unsigned i = 0; i < CVA6Cfg.NR_SB_ENTRIES; i++) begin
+        if (flush_i[mem_n[i].sbe.hartid]) begin
+          mem_n[i].cancelled    = 1'b0;
+          mem_n[i].sbe.valid    = 1'b0;
+          mem_n[i].sbe.ex.valid = 1'b0;
+          if (mem_n[i].issued) begin
+            mem_n[i].flushed = 1'b1;
+            mem_n[i].was_fp |= mem_q[i].sbe.fu == ariane_pkg::FPU;
+          end
+        end
+      end
+    end else begin
     if (flush_i) begin
       for (int unsigned i = 0; i < CVA6Cfg.NR_SB_ENTRIES; i++) begin
         // set all valid flags for all entries to zero
@@ -259,6 +281,7 @@ module scoreboard #(
         mem_n[i].sbe.valid    = 1'b0;
         mem_n[i].sbe.ex.valid = 1'b0;
       end
+    end
     end
   end
 
@@ -272,11 +295,14 @@ module scoreboard #(
     assign num_commit = commit_ack_i[0];
   end
 
+  if (!CVA6Cfg.MultihartEn)
   assign commit_pointer_n[0] = (flush_i) ? '0 : commit_pointer_q[0] + num_commit;
+  else
+  assign commit_pointer_n[0] = commit_pointer_q[0] + (mem_q[commit_pointer_q[0]].flushed || num_commit);
 
   always_comb begin : assign_issue_pointer_n
     issue_pointer_n = issue_pointer[num_issue];
-    if (flush_i) issue_pointer_n = '0;
+      if (!CVA6Cfg.MultihartEn && flush_i) issue_pointer_n = '0;
   end
 
   // precompute offsets for commit slots
@@ -294,7 +320,7 @@ module scoreboard #(
   end
 
   assign fwd_o.still_issued = still_issued;
-  assign fwd_o.issue_pointer = issue_pointer[0];
+  assign fwd_o.issue_pointer = issue_pointer;
   assign fwd_o.wb = wb;
   for (genvar i = 0; i < CVA6Cfg.NR_SB_ENTRIES; i++) begin
     assign fwd_o.sbe[i] = mem_q[i].sbe;
