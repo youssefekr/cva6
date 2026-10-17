@@ -1,0 +1,9 @@
+{
+  "generated_at": "2026-10-17T12:19:49.608712+00:00",
+  "repo": "youssefekr/cva6",
+  "workflows": [
+    "ci",
+    "tier1",
+    "tier2"
+  ]
+}
